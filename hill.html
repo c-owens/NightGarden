@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Hilltop</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #03040b; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; touch-action: none; }
+  #hud {
+    position: fixed; left: 50%; top: 28px; transform: translateX(-50%); width: min(92vw, 680px);
+    font: 300 15px/1.6 Georgia, "Times New Roman", serif; letter-spacing: .04em;
+    color: rgba(220, 225, 255, .78); text-align: center; pointer-events: none;
+    transition: opacity 1.6s ease; text-shadow: 0 0 12px rgba(120,140,255,.4);
+  }
+  #hud b { font-weight: 400; color: #fff; }
+  #hud small { display: block; margin-top: 6px; font-size: 12px; opacity: .65; letter-spacing: .08em; }
+  #breath {
+    position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%);
+    font: 300 18px Georgia, serif; letter-spacing: .2em; color: rgba(230,235,255,.85);
+    pointer-events: none; opacity: 0; transition: opacity 1s ease;
+  }
+  #toast {
+    position: fixed; left: 50%; bottom: 7vh; transform: translateX(-50%); width: min(90vw, 560px);
+    font: italic 15px/1.5 Georgia, serif; letter-spacing: .03em; text-align: center;
+    color: rgba(225,230,255,.8); text-shadow: 0 0 14px rgba(120,140,255,.5);
+    opacity: 0; transition: opacity 1.2s ease; pointer-events: none;
+  }
+  #back {
+    position: fixed; left: 18px; bottom: 16px; font: 12px Georgia, serif; letter-spacing: .08em;
+    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease;
+  }
+  #back:hover, #topond:hover { color: rgba(220,228,255,.85); }
+  #topond { position: fixed; left: 18px; bottom: 36px; font: 12px Georgia, serif; letter-spacing: .08em;
+    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease; }
+  #namer {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); display: none;
+    font: italic 20px Georgia, serif; letter-spacing: .04em; text-align: center;
+    color: #eef0ff; background: rgba(10, 12, 32, .72); border: 1px solid rgba(180, 190, 255, .3);
+    border-radius: 8px; padding: 10px 16px; width: min(80vw, 420px); outline: none;
+    box-shadow: 0 0 40px rgba(110, 130, 255, .25);
+  }
+  #highpond { position: fixed; left: 18px; bottom: 56px; font: 12px Georgia, serif; letter-spacing: .08em;
+    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease; }
+  #highpond:hover { color: rgba(220,228,255,.85); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  Click a star, then another, to draw a constellation.
+  <small>click the last star again to finish &nbsp;·&nbsp; <b>R</b> rename &nbsp;·&nbsp; <b>Backspace</b> undo &nbsp;·&nbsp; <b>Esc</b> cancel<br>
+  <b>S</b> sound &nbsp;·&nbsp; <b>M</b> music &nbsp;·&nbsp; <b>N</b> nature &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>B</b> breathe &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>H</b> hide this</small>
+</div>
+<div id="breath"></div>
+<div id="toast"></div>
+<input id="namer" maxlength="40" spellcheck="false" autocomplete="off">
+<a id="back" href="index.html">&larr; back down to the garden</a>
+<a id="topond" href="pond.html">down to the pond &rarr;</a>
+<a id="highpond" href="high-pond.html">over to the high pond &rarr;</a>
+
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const hud = document.getElementById('hud');
+  const breathEl = document.getElementById('breath');
+  const toastEl = document.getElementById('toast');
+  const namer = document.getElementById('namer');
+  let W = 0, H = 0, DPR = 1;
+
+  // ---------- helpers ----------
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const easeOut = t => 1 - Math.pow(1 - t, 3);
+  const easeInOut = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  function load(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch (e) { return d; } }
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  function segDist(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy || 1;
+    const k = clamp(((px - ax) * dx + (py - ay) * dy) / L, 0, 1);
+    return Math.hypot(px - ax - dx * k, py - ay - dy * k);
+  }
+
+  // ---------- the sky ----------
+  // The sky turns once every three hours around the pole star, on the wall clock, so it is
+  // in the same place in the garden and at the pond, and it has moved on when you come back.
+  // Stars are a fixed, seeded catalogue (polar coords around the pole) so constellations,
+  // which remember which stars they use, survive resizes and visits.
+  const SKY_PERIOD = 3 * 3600 * 1000;
+  const skyAngle = () => -2 * Math.PI * ((Date.now() % SKY_PERIOD) / SKY_PERIOD);
+  let PX = 0, PY = 0, R = 0;                  // pole position and the sky's radius in px
+  function poleLayout(skyH) { PX = W * 0.5; PY = skyH * 0.26; R = Math.hypot(W * 0.5, skyH * 0.74); }
+
+  const CAT = (() => {
+    const rnd = mulberry32(20261108), out = [];
+    out.push({ r: 0, th: 0, size: 1.7, hue: 215, sat: 30, tw: 0.0009, ph: 1, pole: true });
+    for (let i = 0; i < 900; i++) {
+      const b = rnd();
+      const size = b < 0.82 ? 0.35 + rnd() * 0.6 : b < 0.96 ? 0.95 + rnd() * 0.55 : 1.5 + rnd() * 0.9;
+      const warm = rnd() < 0.22;
+      out.push({ r: Math.sqrt(rnd()) * 1.02, th: rnd() * Math.PI * 2, size,
+                 hue: warm ? 28 + rnd() * 20 : 205 + rnd() * 30, sat: warm ? 55 : 35 + rnd() * 30,
+                 tw: 0.0004 + rnd() * 0.0018, ph: rnd() * 6.28 });
+    }
+    // a river of faint dust stars along the milky way (not clickable)
+    for (let i = 0; i < 1400; i++) {
+      const s = rnd() * 2.4 - 1.2, off = (rnd() + rnd() + rnd() - 1.5) * 0.11;
+      const x = s * 0.83 - off * 0.56 + 0.18, y = s * 0.56 + off * 0.83 - 0.05;
+      out.push({ r: Math.hypot(x, y), th: Math.atan2(y, x), size: 0.25 + rnd() * 0.35, dust: true,
+                 hue: 215 + rnd() * 40, sat: 30, tw: 0.0005 + rnd() * 0.001, ph: rnd() * 6.28 });
+    }
+    return out;
+  })();
+  const pos = new Float32Array(CAT.length * 2);    // screen positions, refreshed each frame
+
+  // ---------- the hill ----------
+  const CREST = 0.68;
+  function hillY(x) {
+    const u = x / W;
+    const base = u < CREST ? 0.80 + 0.24 * Math.pow((u - CREST) / CREST, 2)
+                           : 0.80 + 0.06 * Math.pow((u - CREST) / (1 - CREST), 2);
+    return H * base + Math.sin(x * 0.013) * 3 + Math.sin(x * 0.031 + 2) * 1.5;
+  }
+  const farY = x => H * 0.885 + Math.sin(x * 0.006 + 1) * 6 + Math.sin(x * 0.017) * 3;
+
+  let milky = null, blades = [], fireflies = [], tree = null, valley = [];
+  let sparks = [], shooting = null, satellite = null, nextSat = performance.now() + rand(20000, 60000);
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = W * DPR; cv.height = H * DPR;
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    poleLayout(H);
+
+    // milky way glow, drawn once around the pole at half resolution, then turned with the sky
+    const MS = 0.5, size = Math.ceil(R * 2.1 * MS);
+    milky = document.createElement('canvas'); milky.width = milky.height = size;
+    const m = milky.getContext('2d'), rnd = mulberry32(7);
+    m.translate(size / 2, size / 2); m.scale(R * MS, R * MS);
+    m.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 70; i++) {
+      const s = i / 69 * 2.4 - 1.2, off = (rnd() - 0.5) * 0.12;
+      const x = s * 0.83 - off * 0.56 + 0.18, y = s * 0.56 + off * 0.83 - 0.05;
+      const r = 0.07 + rnd() * 0.12, hue = 220 + rnd() * 50;
+      const g = m.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `hsla(${hue}, 55%, 70%, ${0.035 + rnd() * 0.03})`);
+      g.addColorStop(1, `hsla(${hue}, 55%, 50%, 0)`);
+      m.fillStyle = g; m.beginPath(); m.arc(x, y, r, 0, 6.29); m.fill();
+    }
+    // a few dark dust lanes through it
+    m.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < 18; i++) {
+      const s = rnd() * 2 - 1, x = s * 0.83 + 0.18 + (rnd() - 0.5) * 0.03, y = s * 0.56 - 0.05 + (rnd() - 0.5) * 0.03;
+      const r = 0.03 + rnd() * 0.05, g = m.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(0,0,0,.45)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      m.fillStyle = g; m.beginPath(); m.arc(x, y, r, 0, 6.29); m.fill();
+    }
+
+    blades = [];
+    for (let x = -4; x < W + 4; x += rand(3, 6)) {
+      blades.push({ x, h: rand(5, 15) * (x / W > CREST - 0.25 ? 1 : 0.8), ph: rand(0, 6.28), bend: 0, bv: 0, lean: rand(-0.2, 0.2) });
+    }
+    if (!fireflies.length) fireflies = Array.from({ length: 12 }, () => ({
+      x: rand(0, W), y: rand(H * 0.7, H * 0.95), vx: rand(-.2, .2), vy: rand(-.1, .1),
+      ph: rand(0, 6.28), sp: rand(0.0015, 0.004), hue: rand(55, 85)
+    }));
+    // far down in the valley: the garden's flowers and the glint of the pond
+    const HUES = [190, 205, 265, 285, 320, 340, 45, 160];
+    valley = Array.from({ length: Math.max(8, Math.floor(W / 70)) }, () => {
+      const x = W * rand(0.09, 0.21);
+      return { x, y: farY(x) - rand(1, 5), hue: pick(HUES), ph: rand(0, 6.28) };
+    });
+    tree = makeTree();
+  }
+
+  function makeTree() {
+    const rnd = mulberry32(42), x = W * 0.83, base = hillY(x) + 2, h = Math.min(H * 0.2, W * 0.4, 190);
+    function branch(len, ang, depth) {
+      const b = { len, ang, kids: [], depth, leaf: depth >= 5 };
+      if (depth < 6) {
+        const n = depth < 2 ? 2 : 2 + (rnd() < 0.35 ? 1 : 0);
+        for (let i = 0; i < n; i++) {
+          const spread = (i - (n - 1) / 2) * (0.5 + rnd() * 0.25) + (rnd() - 0.5) * 0.25;
+          b.kids.push(branch(len * (0.68 + rnd() * 0.12), spread - (depth === 0 ? 0.08 : 0), depth + 1));
+        }
+      }
+      return b;
+    }
+    return { x, base, root: branch(h * 0.34, -0.04, 0) };
+  }
+  function drawTree(t) {
+    const sw = Math.sin(t * 0.0006) * 0.015 + wind * 0.01;
+    ctx.fillStyle = ctx.strokeStyle = '#04040e';
+    ctx.lineCap = 'round';
+    const go = (b, x, y, a) => {
+      const aa = a + b.ang + sw * b.depth * (1 + 0.3 * Math.sin(t * 0.0013 + b.depth));
+      const x2 = x + Math.sin(aa) * b.len, y2 = y - Math.cos(aa) * b.len;
+      ctx.lineWidth = Math.max(0.7, 7 * Math.pow(0.62, b.depth));
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x2, y2); ctx.stroke();
+      if (b.leaf) { ctx.beginPath(); ctx.arc(x2, y2, 4 + (b.depth === 6 ? 2 : 0), 0, 6.29); ctx.fill(); }
+      for (const k of b.kids) go(k, x2, y2, aa);
+    };
+    go(tree.root, tree.x, tree.base, 0);
+  }
+
+  // ---------- constellations ----------
+  let consts = load('nightgarden.constellations', []);
+  let cur = null;                    // { idx: [catalogue indices], edges: [[a, b]], closed }
+  let hovered = null, hoverStar = -1, shownName = null, flare = null, clearArmed = 0;
+  function save() { store('nightgarden.constellations', consts); }
+  window.addEventListener('storage', e => { if (e.key === 'nightgarden.constellations') consts = load(e.key, []); });
+
+  const ADJ = ['Sleepy', 'Patient', 'Quiet', 'Wandering', 'Small', 'Unhurried', 'Gentle', 'Borrowed',
+               'Faraway', 'Kind', 'Little', 'Old', 'Second', 'Dreaming', 'Lantern-lit', 'Patient'];
+  const NOUNS = {
+    2: ['Bridge', 'Thread', 'Pair', 'Promise', 'Footbridge', 'Two Friends'],
+    3: ['Kite', 'Paper Boat', 'Teacup', 'Sparrow', 'Arrowhead', 'Tent'],
+    4: ['Fox', 'Kite', 'Moth', 'Hare', 'Teapot', 'Wheelbarrow'],
+    6: ['Heron', 'Lantern', 'Sleeping Cat', 'Harp', 'Swan', 'Gardener', 'Wren', 'Dipper', 'Snail'],
+    99: ['Whale', 'Long River', 'Great Owl', 'Dragon', 'Ship', 'Stag', 'Ferryman', 'Lighthouse Keeper', 'Bear']
+  };
+  const LOOPS = ['Window', 'Kettle', 'Nest', 'Lantern', 'Pond', 'Ring', 'Teacup', 'Doorway'];
+  const PLACES = ['the Small Hours', 'the Hill', 'the Long Night', 'the Garden', 'the Pond', 'Home', 'Late Autumn'];
+  function makeName(n, closed) {
+    const key = n <= 2 ? 2 : n <= 3 ? 3 : n <= 4 ? 4 : n <= 7 ? 6 : 99;
+    const noun = closed && Math.random() < 0.6 ? pick(LOOPS) : pick(NOUNS[key]);
+    const r = Math.random();
+    if (r < 0.55) return `The ${pick(ADJ)} ${noun}`;
+    if (r < 0.8) return `The ${noun} of ${pick(PLACES)}`;
+    return `The ${noun}`;
+  }
+
+  function starAt(x, y, touch) {
+    let best = -1, bestScore = touch ? 40 : 26;
+    for (let i = 0; i < CAT.length; i++) {
+      const s = CAT[i]; if (s.dust) continue;
+      const sx = pos[i * 2], sy = pos[i * 2 + 1];
+      if (sx < -10 || sx > W + 10 || sy < -10 || sy > hillY(sx) - 6) continue;
+      const d = Math.hypot(sx - x, sy - y);
+      if (d > bestScore + 6) continue;
+      const score = d - s.size * 5;
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+  }
+  function constAt(x, y) {
+    let best = null, bd = 14;
+    for (const k of consts) for (const [a, b] of k.edges) {
+      const ia = k.idx[a], ib = k.idx[b];
+      const d = segDist(x, y, pos[ia * 2], pos[ia * 2 + 1], pos[ib * 2], pos[ib * 2 + 1]);
+      if (d < bd) { bd = d; best = k; }
+    }
+    return best;
+  }
+
+  function addStar(i) {
+    if (!cur) {
+      cur = { idx: [i], edges: [], closed: false };
+      starNote(i, 0);
+      burst(i, 6);
+      return;
+    }
+    const last = cur.idx.length - 1, lastStar = cur.idx[cur.lastAt ?? last];
+    if (i === lastStar) return finish();
+    let j = cur.idx.indexOf(i);
+    const a = cur.lastAt ?? last;
+    if (j < 0) { cur.idx.push(i); j = cur.idx.length - 1; }
+    else cur.closed = true;
+    if (!cur.edges.some(([p, q]) => (p === a && q === j) || (p === j && q === a))) cur.edges.push([a, j]);
+    cur.lastAt = j;
+    starNote(i, 0);
+    burst(i, 6);
+  }
+  function undo() {
+    if (!cur) return;
+    const e = cur.edges.pop();
+    if (!e) { cur = null; toast('let go'); return; }
+    const [a, b] = e;
+    // drop the star too if nothing else uses it
+    if (b === cur.idx.length - 1 && !cur.edges.some(([p, q]) => p === b || q === b)) cur.idx.pop();
+    cur.lastAt = a;
+  }
+  function finish() {
+    if (!cur) return;
+    if (!cur.edges.length) { cur = null; return; }
+    const k = {
+      name: makeName(cur.idx.length, cur.closed),
+      idx: cur.idx.slice(), edges: cur.edges.map(e => e.slice()),
+      pts: cur.idx.map(i => [+CAT[i].r.toFixed(5), +CAT[i].th.toFixed(5)]),   // so the garden and pond can draw it too
+      made: Date.now()
+    };
+    consts.push(k);
+    if (consts.length > 40) consts.shift();
+    save();
+    cur = null;
+    flare = { k, t0: lastT };
+    shownName = { k, until: lastT + 6000 };
+    arpeggio(k);
+    toast(`You found ${k.name}.  (R to rename it)`, 5000);
+    lastMade = k;
+  }
+  let lastMade = null;
+
+  function startRename(k) {
+    if (!k) return;
+    renaming = k;
+    namer.value = k.name; namer.style.display = 'block';
+    namer.focus(); namer.select();
+  }
+  let renaming = null;
+  namer.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      const v = namer.value.trim();
+      if (v && renaming) { renaming.name = v; save(); shownName = { k: renaming, until: lastT + 5000 }; }
+      endRename();
+    } else if (e.key === 'Escape') endRename();
+  });
+  namer.addEventListener('blur', () => endRename());
+  function endRename() { renaming = null; namer.style.display = 'none'; namer.blur(); }
+
+  // ---------- drawing ----------
+  let glowSprite = null;
+  function glow() {
+    if (glowSprite) return glowSprite;
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.15, 'rgba(255,255,255,.45)');
+    gr.addColorStop(0.5, 'rgba(255,255,255,.08)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    return glowSprite = c;
+  }
+
+  function drawSky(t) {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#020309'); g.addColorStop(0.5, '#070a22'); g.addColorStop(0.82, '#151436'); g.addColorStop(1, '#1f1a40');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const ang = skyAngle(), ca = Math.cos(ang), sa = Math.sin(ang);
+
+    ctx.save(); ctx.translate(PX, PY); ctx.rotate(ang);
+    ctx.drawImage(milky, -milky.width / 2 / 0.5, -milky.height / 2 / 0.5, milky.width / 0.5, milky.height / 0.5);
+    ctx.restore();
+
+    // where every star is right now
+    for (let i = 0; i < CAT.length; i++) {
+      const s = CAT[i], c = Math.cos(s.th), sn = Math.sin(s.th);
+      pos[i * 2] = PX + R * s.r * (c * ca - sn * sa);
+      pos[i * 2 + 1] = PY + R * s.r * (sn * ca + c * sa);
+    }
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const spr = glow();
+    for (let i = 0; i < CAT.length; i++) {
+      const s = CAT[i], x = pos[i * 2], y = pos[i * 2 + 1];
+      if (x < -20 || x > W + 20 || y < -20 || y > H) continue;
+      // stars sink into the haze near the horizon
+      const haze = clamp((hillY(x) - y) / (H * 0.12), 0, 1) * 0.75 + 0.25;
+      const a = (0.55 + 0.45 * Math.sin(t * s.tw + s.ph)) * haze;
+      if (s.dust) { ctx.fillStyle = `hsla(${s.hue}, 30%, 85%, ${a * 0.5})`; ctx.fillRect(x, y, s.size * 1.3, s.size * 1.3); continue; }
+      ctx.fillStyle = `hsla(${s.hue}, ${s.sat}%, 88%, ${a * 0.95})`;
+      ctx.beginPath(); ctx.arc(x, y, s.size, 0, 6.29); ctx.fill();
+      if (s.size > 1.2) {
+        const r = s.size * 7;
+        ctx.globalAlpha = a * 0.5;
+        ctx.drawImage(spr, x - r, y - r, r * 2, r * 2);
+        ctx.globalAlpha = 1;
+      }
+    }
+    ctx.restore();
+
+    // a satellite, now and then, slow and steady
+    if (!satellite && t > nextSat) {
+      const fromLeft = Math.random() < 0.5;
+      satellite = { x0: fromLeft ? -10 : W + 10, y0: rand(H * 0.05, H * 0.45), x1: fromLeft ? W + 10 : -10, y1: rand(H * 0.05, H * 0.5), t0: t, dur: rand(28000, 40000) };
+    }
+    if (satellite) {
+      const k = (t - satellite.t0) / satellite.dur;
+      if (k >= 1) { satellite = null; nextSat = t + rand(70000, 150000); }
+      else {
+        const x = satellite.x0 + (satellite.x1 - satellite.x0) * k, y = satellite.y0 + (satellite.y1 - satellite.y0) * k;
+        ctx.fillStyle = `rgba(235, 238, 255, ${0.7 * Math.sin(Math.PI * k) + 0.1})`;
+        ctx.beginPath(); ctx.arc(x, y, 0.9, 0, 6.29); ctx.fill();
+      }
+    }
+
+    // shooting star
+    if (shooting) {
+      const k = (t - shooting.t0) / shooting.dur;
+      if (k >= 1) shooting = null;
+      else {
+        const x = shooting.x + shooting.dx * k, y = shooting.y + shooting.dy * k;
+        const tail = ctx.createLinearGradient(x, y, x - shooting.dx * 0.2, y - shooting.dy * 0.2);
+        tail.addColorStop(0, `rgba(255,255,255,${1 - k})`);
+        tail.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.strokeStyle = tail; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - shooting.dx * 0.2, y - shooting.dy * 0.2); ctx.stroke();
+      }
+    } else if (Math.random() < 0.0011) launchShootingStar(t);
+  }
+  function launchShootingStar(t) {
+    shooting = { x: rand(W * 0.1, W * 0.6), y: rand(H * 0.05, H * 0.35), dx: rand(W * 0.25, W * 0.4) * (Math.random() < 0.5 ? 1 : -1), dy: rand(H * 0.1, H * 0.2), t0: t, dur: 1100 };
+    if (shooting.dx < 0) shooting.x += W * 0.35;
+  }
+
+  function line(ia, ib) { ctx.moveTo(pos[ia * 2], pos[ia * 2 + 1]); ctx.lineTo(pos[ib * 2], pos[ib * 2 + 1]); }
+
+  function drawConstellations(t) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+    const spr = glow();
+    for (const k of consts) {
+      const isHot = k === hovered || (shownName && shownName.k === k);
+      let fl = 0;
+      if (flare && flare.k === k) { fl = 1 - (t - flare.t0) / 2500; if (fl <= 0) { flare = null; fl = 0; } }
+      const a = 0.3 + (isHot ? 0.3 : 0) + fl * 0.6 + 0.04 * Math.sin(t * 0.001 + k.made);
+      ctx.strokeStyle = `rgba(185, 200, 255, ${a})`; ctx.lineWidth = 1 + fl;
+      ctx.beginPath(); for (const [p, q] of k.edges) line(k.idx[p], k.idx[q]); ctx.stroke();
+      for (const i of k.idx) {
+        const x = pos[i * 2], y = pos[i * 2 + 1], r = 9 + (isHot ? 4 : 0) + fl * 10;
+        ctx.globalAlpha = 0.55 + (isHot ? 0.3 : 0) + fl * 0.45;
+        ctx.drawImage(spr, x - r, y - r, r * 2, r * 2);
+        ctx.globalAlpha = 1;
+      }
+    }
+    // the one you're drawing now
+    if (cur) {
+      ctx.strokeStyle = 'rgba(215, 225, 255, .75)'; ctx.lineWidth = 1.3;
+      ctx.beginPath(); for (const [p, q] of cur.edges) line(cur.idx[p], cur.idx[q]); ctx.stroke();
+      const li = cur.idx[cur.lastAt ?? cur.idx.length - 1];
+      if (mouse.active) {
+        const tx = hoverStar >= 0 ? pos[hoverStar * 2] : mouse.x, ty = hoverStar >= 0 ? pos[hoverStar * 2 + 1] : mouse.y;
+        const g = ctx.createLinearGradient(pos[li * 2], pos[li * 2 + 1], tx, ty);
+        g.addColorStop(0, 'rgba(215, 225, 255, .5)'); g.addColorStop(1, `rgba(215, 225, 255, ${hoverStar >= 0 ? .5 : .08})`);
+        ctx.strokeStyle = g; ctx.setLineDash([3, 5]);
+        ctx.beginPath(); ctx.moveTo(pos[li * 2], pos[li * 2 + 1]); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      for (const i of cur.idx) {
+        const x = pos[i * 2], y = pos[i * 2 + 1], r = i === li ? 13 + 2 * Math.sin(t * 0.004) : 10;
+        ctx.globalAlpha = 0.7; ctx.drawImage(spr, x - r, y - r, r * 2, r * 2); ctx.globalAlpha = 1;
+      }
+    }
+    // the star under the cursor
+    if (hoverStar >= 0) {
+      const x = pos[hoverStar * 2], y = pos[hoverStar * 2 + 1];
+      ctx.strokeStyle = `rgba(220, 228, 255, ${0.35 + 0.15 * Math.sin(t * 0.005)})`; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.arc(x, y, 7, 0, 6.29); ctx.stroke();
+    }
+    ctx.restore();
+
+    // names
+    const nameK = hovered || (shownName && lastT < shownName.until ? shownName.k : null);
+    if (nameK) {
+      let cx = 0, top = 1e9;
+      for (const i of nameK.idx) { cx += pos[i * 2]; top = Math.min(top, pos[i * 2 + 1]); }
+      cx /= nameK.idx.length;
+      const fade = hovered === nameK ? 1 : clamp((shownName.until - lastT) / 1200, 0, 1);
+      ctx.font = 'italic 14px Georgia, serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(225, 230, 255, ${0.8 * fade})`;
+      ctx.shadowColor = 'rgba(120, 140, 255, .6)'; ctx.shadowBlur = 12;
+      ctx.fillText(nameK.name, clamp(cx, 90, W - 90), Math.max(22, top - 18));
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  function burst(i, n) {
+    const x = pos[i * 2], y = pos[i * 2 + 1];
+    for (let j = 0; j < n; j++) { const a = rand(0, 6.28), v = rand(0.3, 1.1); sparks.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, hue: rand(200, 240) }); }
+  }
+
+  function drawLand(t) {
+    // the far side of the valley, with the garden and the pond glowing down there
+    ctx.fillStyle = '#0b0a24';
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W * 0.5; x += 6) ctx.lineTo(x, farY(x));
+    ctx.lineTo(W * 0.5, H); ctx.fill();
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    for (const v of valley) {
+      const p = 0.6 + 0.4 * Math.sin(t * 0.0012 + v.ph), r = 3.2;
+      const g = ctx.createRadialGradient(v.x, v.y, 0, v.x, v.y, r);
+      g.addColorStop(0, `hsla(${v.hue}, 90%, 75%, ${0.7 * p})`); g.addColorStop(1, `hsla(${v.hue}, 90%, 50%, 0)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(v.x, v.y, r, 0, 6.29); ctx.fill();
+    }
+    const px = W * 0.045, py = farY(px) + 3;
+    ctx.fillStyle = `rgba(190, 200, 255, ${0.16 + 0.04 * Math.sin(t * 0.0009)})`;
+    ctx.beginPath(); ctx.ellipse(px, py, W * 0.03, 2.2, 0, 0, 6.29); ctx.fill();
+    ctx.restore();
+
+    // your hill
+    ctx.fillStyle = '#05050f';
+    ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W + 6; x += 6) ctx.lineTo(x, hillY(x));
+    ctx.lineTo(W, H); ctx.fill();
+    drawTree(t);
+
+    // grass on the brow, bending away from the cursor
+    ctx.strokeStyle = '#05050f'; ctx.lineWidth = 1.3; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const b of blades) {
+      const y0 = hillY(b.x) + 1;
+      let target = wind * 0.12;
+      if (mouse.active) {
+        const dx = b.x - mouse.x, dy = y0 - b.h - mouse.y, d = Math.hypot(dx, dy);
+        if (d < 90) target += Math.sign(dx || 1) * (1 - d / 90) * 0.9 + mouse.vx * 0.01 * (1 - d / 90);
+      }
+      b.bv += (clamp(target, -1.2, 1.2) - b.bend) * 0.08; b.bv *= 0.86; b.bend += b.bv;
+      const a = b.lean + b.bend + Math.sin(t * 0.0011 + b.ph) * 0.08;
+      ctx.moveTo(b.x, y0);
+      ctx.quadraticCurveTo(b.x + Math.sin(a * 0.4) * b.h * 0.5, y0 - b.h * 0.55, b.x + Math.sin(a) * b.h, y0 - Math.cos(a) * b.h);
+    }
+    ctx.stroke();
+  }
+
+  function drawFireflies(t) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    for (const f of fireflies) {
+      f.vx = clamp(f.vx + rand(-.03, .03), -.5, .5); f.vy = clamp(f.vy + rand(-.03, .03), -.3, .3);
+      f.x += f.vx + wind * 0.3; f.y += f.vy;
+      if (f.x < -20) f.x = W + 20; if (f.x > W + 20) f.x = -20;
+      const gy = hillY(f.x);
+      if (f.y < gy - 80) f.vy += 0.02; if (f.y > gy + 30) f.vy -= 0.04;
+      const a = Math.max(0, Math.sin(t * f.sp + f.ph)); if (a < 0.02) continue;
+      const r = 8 * a, g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+      g.addColorStop(0, `hsla(${f.hue}, 100%, 75%, ${0.85 * a})`); g.addColorStop(1, `hsla(${f.hue}, 100%, 50%, 0)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, 6.29); ctx.fill();
+    }
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i]; s.x += s.vx; s.y += s.vy; s.vx *= 0.96; s.vy *= 0.96; s.life -= 0.02;
+      if (s.life <= 0) { sparks.splice(i, 1); continue; }
+      ctx.fillStyle = `hsla(${s.hue}, 90%, 85%, ${s.life})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 1.3 * s.life + 0.3, 0, 6.29); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---------- breathing guide (4 in · 4 hold · 6 out) ----------
+  let breathing = false, breathStart = 0;
+  function drawBreath(t) {
+    if (!breathing) return;
+    const k = (t - breathStart) % 14000;
+    let r01, label;
+    if (k < 4000) { r01 = easeInOut(k / 4000); label = 'breathe in'; }
+    else if (k < 8000) { r01 = 1; label = 'hold'; }
+    else { r01 = 1 - easeInOut((k - 8000) / 6000); label = 'breathe out'; }
+    if (breathEl.textContent !== label) breathEl.textContent = label;
+    const Rr = 30 + r01 * Math.min(W, H) * 0.13, cx = W / 2, cy = H * 0.42;
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(cx, cy, Rr * 0.2, cx, cy, Rr * 1.4);
+    g.addColorStop(0, 'rgba(140, 160, 255, 0)'); g.addColorStop(0.7, 'rgba(140, 160, 255, .10)'); g.addColorStop(1, 'rgba(140, 160, 255, 0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, Rr * 1.4, 0, 6.29); ctx.fill();
+    ctx.strokeStyle = 'rgba(200, 210, 255, .35)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.arc(cx, cy, Rr, 0, 6.29); ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---------- sound (all synthesized live) ----------
+  // master -> { music (slow pad + star bells), nature (wind, a few far-off crickets) }
+  let audio = null, soundOn = false, musicOn = true, natureOn = true;
+  const SCALE = [0, 2, 4, 7, 9];                       // F major pentatonic, for the stars
+  const F3 = 174.61;
+  const CHORDS = [                                    // semitones above F3
+    [0, 7, 16, 19, 24],      // Fmaj9-ish
+    [-3, 4, 12, 19, 21],     // Dm9
+    [-7, 0, 9, 16, 19],      // B♭maj9
+    [-5, 2, 7, 12, 14],      // Csus
+  ];
+  function initAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    const ac = new AC();
+    const master = ac.createGain(); master.gain.value = 0; master.connect(ac.destination);
+    const music = ac.createGain(); music.gain.value = 1; music.connect(master);
+    const nature = ac.createGain(); nature.gain.value = 1; nature.connect(master);
+    const pan = (node, p) => { if (!ac.createStereoPanner) return node; const sp = ac.createStereoPanner(); sp.pan.value = p; node.connect(sp); return sp; };
+
+    // a soft two-tap echo standing in for a big sky
+    const verb = ac.createGain(); verb.gain.value = 1;
+    [[0.31, -0.6], [0.47, 0.6]].forEach(([dt, p]) => {
+      const d = ac.createDelay(); d.delayTime.value = dt;
+      const fb = ac.createGain(); fb.gain.value = 0.5;
+      const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400;
+      verb.connect(d); d.connect(lp); lp.connect(fb); fb.connect(d);
+      const w = ac.createGain(); w.gain.value = 0.35; lp.connect(w); pan(w, p).connect(master);
+    });
+
+    const padBus = ac.createGain(); padBus.gain.value = 0.5;
+    const padLp = ac.createBiquadFilter(); padLp.type = 'lowpass'; padLp.frequency.value = 900; padLp.Q.value = 0.3;
+    padBus.connect(padLp); padLp.connect(music); padLp.connect(verb);
+    const lfo = ac.createOscillator(); lfo.frequency.value = 0.05;
+    const lfoAmt = ac.createGain(); lfoAmt.gain.value = 350; lfo.connect(lfoAmt); lfoAmt.connect(padLp.frequency); lfo.start();
+
+    const nb = ac.createBuffer(1, ac.sampleRate * 3, ac.sampleRate);
+    const d = nb.getChannelData(0); let b = 0;
+    for (let i = 0; i < d.length; i++) { b = 0.97 * b + 0.03 * (Math.random() * 2 - 1); d[i] = (Math.random() * 2 - 1) * 0.6 + b * 4; }
+    const noise = () => { const n = ac.createBufferSource(); n.buffer = nb; n.loop = true; n.start(); return n; };
+
+    // wind across the hilltop: it's a little windier up here than in the garden
+    const windLp = ac.createBiquadFilter(); windLp.type = 'lowpass'; windLp.frequency.value = 350; windLp.Q.value = 0.8;
+    const windGain = ac.createGain(); windGain.gain.value = 0.03;
+    noise().connect(windLp); windLp.connect(windGain); windGain.connect(nature);
+    const gust = ac.createOscillator(); gust.frequency.value = 0.07;
+    const gustAmt = ac.createGain(); gustAmt.gain.value = 0.018; gust.connect(gustAmt); gustAmt.connect(windGain.gain); gust.start();
+
+    // crickets, far away down the slope
+    const crickets = Array.from({ length: 3 }, (_, i) => {
+      const o = ac.createOscillator(); o.type = 'sine'; o.frequency.value = rand(4000, 5000);
+      const g = ac.createGain(); g.gain.value = 0;
+      const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 6000;
+      o.connect(g); g.connect(lp); pan(lp, [-0.8, -0.3, 0.5][i]).connect(nature); o.start();
+      return { g, next: ac.currentTime + rand(0.5, 3), period: rand(0.6, 1.2), pulses: 2 + Math.floor(rand(0, 3)), amp: rand(0.004, 0.009) };
+    });
+
+    return { ac, master, music, nature, verb, padBus, windGain, windLp, crickets, chord: -1, nextChord: 0, voices: [] };
+  }
+
+  function scheduleAudio() {
+    if (!audio || !soundOn) return;
+    const { ac } = audio, now = ac.currentTime;
+    // pad: a new chord every 14 s, fading in slowly over the old one
+    if (now > audio.nextChord) {
+      audio.chord = (audio.chord + 1) % CHORDS.length;
+      audio.nextChord = now + 14;
+      for (const v of audio.voices) { v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now); v.g.gain.linearRampToValueAtTime(0, now + 9); v.o.forEach(o => o.stop(now + 9.2)); }
+      audio.voices = CHORDS[audio.chord].map((n, i) => {
+        const f = F3 * Math.pow(2, n / 12);
+        const g = ac.createGain(); g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(0.05 / (1 + i * 0.25), now + 7);
+        const o = [-6, 6].map(det => { const o = ac.createOscillator(); o.type = i ? 'triangle' : 'sine'; o.frequency.value = f; o.detune.value = det + rand(-3, 3); o.connect(g); o.start(now); return o; });
+        g.connect(audio.padBus);
+        return { g, o };
+      });
+    }
+    for (const c of audio.crickets) {
+      if (now < c.next) continue;
+      for (let p = 0; p < c.pulses; p++) {
+        const s = c.next + p * 0.06;
+        c.g.gain.setValueAtTime(0, s); c.g.gain.linearRampToValueAtTime(c.amp, s + 0.008); c.g.gain.linearRampToValueAtTime(0, s + 0.04);
+      }
+      c.next += c.period * rand(0.9, 1.1) + (Math.random() < 0.08 ? rand(2, 7) : 0);
+    }
+    const w = Math.min(Math.abs(wind), 3) / 3;
+    audio.windGain.gain.setTargetAtTime(0.03 + w * 0.2, now, 0.2);
+    audio.windLp.frequency.setTargetAtTime(330 + w * 900, now, 0.25);
+  }
+
+  function bell(f, when, amp = 0.09) {
+    if (!soundOn || !audio || !musicOn) return;
+    const { ac, music, verb } = audio;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(amp, when + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + 3.5);
+    g.connect(music); g.connect(verb);
+    [[1, 1], [2.01, 0.25], [3.02, 0.08]].forEach(([m, a]) => {
+      const o = ac.createOscillator(), og = ac.createGain();
+      o.type = 'sine'; o.frequency.value = f * m; og.gain.value = a;
+      o.connect(og); og.connect(g); o.start(when); o.stop(when + 3.6);
+    });
+  }
+  function starFreq(i) {
+    // higher stars ring higher
+    const y = pos[i * 2 + 1], k = clamp(1 - y / (H * 0.85), 0, 0.999);
+    const n = Math.floor(k * 12), oct = Math.floor(n / 5);
+    return F3 * 2 * Math.pow(2, (SCALE[n % 5] + 12 * oct) / 12);
+  }
+  function starNote(i, delay) { if (audio) bell(starFreq(i), audio.ac.currentTime + delay); }
+  function arpeggio(k) {
+    if (!audio) return;
+    k.idx.forEach((i, j) => bell(starFreq(i), audio.ac.currentTime + 0.05 + j * 0.16, 0.07));
+  }
+
+  function ensureAudio() {
+    if (!audio) audio = initAudio();
+    if (!audio) { toast('No audio support in this browser'); return false; }
+    audio.ac.resume();
+    return true;
+  }
+  function toggleSound() {
+    if (!ensureAudio()) return;
+    soundOn = !soundOn;
+    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, audio.ac.currentTime, 0.6);
+    toast(soundOn ? 'sound on' : 'sound off');
+  }
+  function toggleBus(which) {
+    if (!ensureAudio()) return;
+    if (!soundOn) {
+      if (which === 'music') musicOn = true; else natureOn = true;
+      audio[which].gain.value = 1;
+      return toggleSound();
+    }
+    if (which === 'music') musicOn = !musicOn; else natureOn = !natureOn;
+    const on = which === 'music' ? musicOn : natureOn;
+    audio[which].gain.setTargetAtTime(on ? 1 : 0, audio.ac.currentTime, 0.5);
+    toast(`${which === 'music' ? 'music' : 'nature sounds'} ${on ? 'on' : 'off'}`);
+  }
+
+  // ---------- wishes ----------
+  const WISHES = [
+    'That light left those stars long before tonight. It still got here.',
+    'You’re allowed to be small up here. The sky doesn’t mind.',
+    'Every constellation started as someone awake at night, connecting dots.',
+    'Nothing up there is in a hurry.',
+    'You don’t have to sleep to rest. Lying still counts.',
+    'The sky turns whether or not you watch it. You can let it.',
+    'Somewhere a long way off, it’s already morning.',
+    'Tomorrow can wait at the bottom of the hill.',
+    'Look how much dark there is, and it still can’t put the stars out.',
+    'The garden is still glowing down there. It doesn’t need you to check.'
+  ];
+  let wishIdx = Math.floor(Math.random() * WISHES.length);
+  function wish(t) {
+    launchShootingStar(t);
+    wishIdx = (wishIdx + 1) % WISHES.length;
+    toast(WISHES[wishIdx], 6000);
+    if (audio && soundOn && musicOn) [0, 4, 7, 12].forEach((n, j) => bell(F3 * 4 * Math.pow(2, n / 12), audio.ac.currentTime + 0.3 + j * 0.12, 0.04));
+  }
+
+  // ---------- ui ----------
+  let toastTimer = 0;
+  function toast(msg, ms = 1600) {
+    toastEl.textContent = msg; toastEl.style.opacity = 1;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.style.opacity = 0, ms);
+  }
+
+  const mouse = { x: -999, y: -999, px: 0, vx: 0, active: false, touch: false };
+  let wind = 0, lastT = 0;
+  function updateHover() {
+    hoverStar = mouse.active ? starAt(mouse.x, mouse.y, mouse.touch) : -1;
+    hovered = mouse.active && !cur && hoverStar < 0 ? constAt(mouse.x, mouse.y) : null;
+    cv.style.cursor = hoverStar >= 0 ? 'pointer' : 'crosshair';
+  }
+  window.addEventListener('pointermove', e => {
+    const dx = mouse.active ? e.clientX - mouse.px : 0;
+    mouse.active = true; mouse.touch = e.pointerType === 'touch';
+    mouse.vx = mouse.vx * 0.5 + dx * 0.5;
+    wind = clamp(wind + clamp(dx * 0.005, -0.4, 0.4), -3, 3);
+    mouse.px = mouse.x = e.clientX; mouse.y = e.clientY;
+  });
+  document.addEventListener('pointerleave', () => { mouse.active = false; });
+  window.addEventListener('blur', () => { mouse.active = false; });
+  cv.addEventListener('pointerdown', e => {
+    mouse.active = true; mouse.touch = e.pointerType === 'touch';
+    mouse.px = mouse.x = e.clientX; mouse.y = e.clientY;
+    if (renaming) return endRename();
+    const i = starAt(e.clientX, e.clientY, mouse.touch);
+    if (i >= 0) addStar(i);
+    else if (cur) toast('click the last star again to finish', 2200);
+    else {
+      const k = constAt(e.clientX, e.clientY);
+      if (k) { shownName = { k, until: lastT + 4000 }; lastMade = k; arpeggio(k); }
+    }
+    if (hud.style.opacity !== '0') setTimeout(() => hud.style.opacity = 0.35, 400);
+  });
+  window.addEventListener('keydown', e => {
+    if (renaming) return;
+    const k = e.key.toLowerCase();
+    if (k === 's') toggleSound();
+    else if (k === 'm') toggleBus('music');
+    else if (k === 'n') toggleBus('nature');
+    else if (k === 'w') wish(lastT);
+    else if (k === 'b') { breathing = !breathing; breathStart = lastT; breathEl.style.opacity = breathing ? 1 : 0; }
+    else if (k === 'h') hud.style.opacity = hud.style.opacity === '0' ? 1 : 0;
+    else if (k === 'escape') { if (cur) { cur = null; toast('let go'); } }
+    else if (k === 'enter') finish();
+    else if (k === 'backspace') { e.preventDefault(); undo(); }
+    else if (k === 'r') { e.preventDefault(); startRename(hovered || (shownName && lastT < shownName.until && shownName.k) || lastMade); }
+    else if (k === 'c') {
+      if (cur) { cur = null; return; }
+      if (!consts.length) return;
+      if (lastT < clearArmed) { consts = []; save(); clearArmed = 0; toast('the sky is just stars again'); }
+      else { clearArmed = lastT + 3000; toast('press C again to let your constellations go', 3000); }
+    }
+  });
+  window.addEventListener('resize', resize);
+
+  // ---------- loop ----------
+  function frame(t) {
+    lastT = t;
+    wind *= 0.965; mouse.vx *= 0.85;
+    scheduleAudio();
+    drawSky(t);
+    updateHover();
+    drawConstellations(t);
+    drawBreath(t);
+    drawLand(t);
+    drawFireflies(t);
+    requestAnimationFrame(frame);
+  }
+  resize();
+  if (consts.length) setTimeout(() => toast(consts.length === 1 ? `${consts[0].name} is still up there.` : 'Your constellations are still up there, turning with the sky.', 4500), 1500);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

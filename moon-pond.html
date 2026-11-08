@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Moon Pond</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05060f; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; }
+  #hud {
+    position: fixed; left: 50%; top: 28px; transform: translateX(-50%);
+    font: 300 15px/1.6 Georgia, "Times New Roman", serif; letter-spacing: .04em;
+    color: rgba(220, 225, 255, .78); text-align: center; pointer-events: none;
+    transition: opacity 1.6s ease; text-shadow: 0 0 12px rgba(120,140,255,.4);
+    width: max-content; max-width: calc(100vw - 32px);
+  }
+  #hud b { font-weight: 400; color: #fff; }
+  #hud small { display: block; margin-top: 6px; font-size: 12px; opacity: .65; letter-spacing: .08em; }
+  #toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+    font: italic 15px/1.5 Georgia, serif; letter-spacing: .03em; text-align: center;
+    color: rgba(225,230,255,.8); text-shadow: 0 0 10px rgba(120,140,255,.5);
+    max-width: calc(100vw - 32px); opacity: 0; transition: opacity .9s ease; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  Click the water to float a lily. Hover near one to wake it.
+  <small>click the sky to wish &nbsp;·&nbsp; <b>S</b> sound &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>G</b> to the garden &nbsp;·&nbsp; <b>H</b> hide this</small>
+</div>
+<div id="toast"></div>
+
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const sky = document.createElement('canvas');      // the sky is drawn once per frame here, then mirrored into the pond
+  const sx = sky.getContext('2d');
+  const hud = document.getElementById('hud');
+  const toastEl = document.getElementById('toast');
+  let W = 0, H = 0, DPR = 1, HZ = 0;                    // HZ = the far shore, where sky meets water
+
+  // ---------- helpers ----------
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const easeOut = t => 1 - Math.pow(1 - t, 3);
+  const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
+  function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  function load(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch (e) { return d; } }
+
+  // things further down the screen are closer to you, so they're drawn larger
+  const persp = y => 0.35 + 0.85 * clamp((y - HZ) / (H - HZ), 0, 1);
+
+  // ---------- world ----------
+  let stars = [], trees = [], reeds = [], fireflies = [], koi = [], ripples = [], sparks = [], shooting = null;
+  const HUES = [330, 345, 300, 270, 205, 48];
+  let lilies = load('moonpond.lilies', null);
+  if (!lilies) {
+    lilies = [[0.18, 0.30, 1], [0.27, 0.62, 0], [0.36, 0.18, 1], [0.52, 0.48, 1], [0.61, 0.22, 0],
+              [0.70, 0.70, 1], [0.80, 0.38, 1], [0.88, 0.14, 0], [0.12, 0.80, 0], [0.45, 0.85, 1]]
+      .map(([fx, fy, b]) => newLily(fx, fy, !!b, -1e9));
+  }
+
+  function newLily(fx, fy, bloom, born) {
+    return { fx, fy, r: rand(20, 34), rot: rand(0, 6.28), hue: HUES[Math.floor(Math.random() * HUES.length)] + rand(-8, 8),
+             bloom, seed: rand(0, 1000), born };
+  }
+  const saveLilies = () => store('moonpond.lilies', lilies.map(({ open, sang, ...o }) => ({ ...o, born: -1e9 })));
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight; HZ = Math.round(H * 0.46);
+    cv.width = W * DPR; cv.height = H * DPR;
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    sky.width = W * DPR; sky.height = HZ * DPR;
+    sx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    stars = Array.from({ length: Math.floor(W * HZ / 1700) }, () => ({
+      x: Math.random() * W, y: Math.random() * (HZ - 30),
+      r: Math.random() < 0.08 ? rand(1.1, 1.7) : rand(0.3, 0.9),
+      tw: rand(0.0005, 0.002), ph: rand(0, 6.28)
+    }));
+
+    // a ragged line of pines and bushes on the far shore
+    trees = [];
+    for (let x = -10; x < W + 20;) {
+      const pine = Math.random() < 0.4;
+      trees.push({ x, pine, h: pine ? rand(18, 48) : rand(8, 20), w: pine ? rand(10, 18) : rand(16, 34) });
+      x += pine ? rand(7, 15) : rand(10, 22);
+    }
+
+    // reeds crowding the near corners
+    reeds = [];
+    for (const [a, b] of [[-0.02, 0.13], [0.86, 1.03]]) {
+      for (let i = 0; i < 16; i++) {
+        reeds.push({ x: W * rand(a, b), h: H * rand(0.12, 0.32), lean: rand(-0.12, 0.12), seed: rand(0, 100),
+                     cattail: Math.random() < 0.3, bend: 0, bv: 0 });
+      }
+    }
+
+    if (!fireflies.length) fireflies = Array.from({ length: 22 }, makeFirefly);
+    if (!koi.length) koi = Array.from({ length: 5 }, (_, i) => makeKoi(i));
+  }
+
+  function makeFirefly() {
+    return { x: Math.random() * W, sy: rand(HZ + 10, H * 0.9), h: rand(15, 70),
+             vx: rand(-.2, .2), vy: rand(-.15, .15), vh: 0,
+             ph: rand(0, 6.28), sp: rand(0.0015, 0.004), hue: rand(55, 85) };
+  }
+
+  function makeKoi(i) {
+    return { x: rand(W * 0.2, W * 0.8), y: rand(HZ + 50, H - 40), ang: rand(0, 6.28),
+             sp: rand(0.3, 0.55), ph: rand(0, 6.28), hue: [22, 8, 40, 0, 30][i % 5], pale: i % 5 === 3 };
+  }
+
+  // ---------- sky (drawn into its own canvas so the pond can reflect it) ----------
+  function drawSky(t) {
+    const g = sx.createLinearGradient(0, 0, 0, HZ);
+    g.addColorStop(0, '#04050d');
+    g.addColorStop(0.6, '#0b1030');
+    g.addColorStop(1, '#1e1a4a');
+    sx.fillStyle = g; sx.fillRect(0, 0, W, HZ);
+
+    for (const s of stars) {
+      const a = 0.45 + 0.55 * Math.sin(t * s.tw + s.ph);
+      sx.fillStyle = `rgba(230, 235, 255, ${a * 0.9})`;
+      sx.beginPath(); sx.arc(s.x, s.y, s.r, 0, 6.29); sx.fill();
+    }
+
+    // a full moon tonight
+    const [mx, my, mr] = moon();
+    const halo = sx.createRadialGradient(mx, my, mr * 0.8, mx, my, mr * 7);
+    halo.addColorStop(0, 'rgba(205, 212, 255, .17)');
+    halo.addColorStop(1, 'rgba(205, 212, 255, 0)');
+    sx.fillStyle = halo; sx.beginPath(); sx.arc(mx, my, mr * 7, 0, 6.29); sx.fill();
+    const disc = sx.createRadialGradient(mx - mr * 0.3, my - mr * 0.3, 0, mx, my, mr);
+    disc.addColorStop(0, '#f6f7ff'); disc.addColorStop(1, '#cdd2f0');
+    sx.fillStyle = disc; sx.beginPath(); sx.arc(mx, my, mr, 0, 6.29); sx.fill();
+    sx.fillStyle = 'rgba(140, 150, 195, .2)';
+    for (const [dx, dy, r] of [[-0.3, -0.2, 0.28], [0.25, 0.1, 0.22], [-0.05, 0.38, 0.17], [0.35, -0.35, 0.12]]) {
+      sx.beginPath(); sx.arc(mx + dx * mr, my + dy * mr, r * mr, 0, 6.29); sx.fill();
+    }
+
+    // shooting star
+    if (shooting) {
+      const k = (t - shooting.t0) / shooting.dur;
+      if (k >= 1) shooting = null;
+      else {
+        const x = shooting.x + shooting.dx * k, y = shooting.y + shooting.dy * k;
+        const tail = sx.createLinearGradient(x, y, x - shooting.dx * 0.18, y - shooting.dy * 0.18);
+        tail.addColorStop(0, `rgba(255,255,255,${1 - k})`);
+        tail.addColorStop(1, 'rgba(255,255,255,0)');
+        sx.strokeStyle = tail; sx.lineWidth = 2;
+        sx.beginPath(); sx.moveTo(x, y); sx.lineTo(x - shooting.dx * 0.18, y - shooting.dy * 0.18); sx.stroke();
+      }
+    } else if (Math.random() < 0.0008) launchShootingStar(t);
+
+    // haze low on the horizon, then the far shore
+    const hz = sx.createLinearGradient(0, HZ - 70, 0, HZ);
+    hz.addColorStop(0, 'rgba(120, 110, 190, 0)');
+    hz.addColorStop(1, 'rgba(120, 110, 190, .2)');
+    sx.fillStyle = hz; sx.fillRect(0, HZ - 70, W, 70);
+    sx.fillStyle = '#06051a';
+    sx.beginPath();
+    for (const tr of trees) {
+      if (tr.pine) {
+        sx.moveTo(tr.x - tr.w / 2, HZ + 2); sx.lineTo(tr.x, HZ - tr.h); sx.lineTo(tr.x + tr.w / 2, HZ + 2);
+      } else {
+        sx.moveTo(tr.x + tr.w / 2, HZ + 2); sx.ellipse(tr.x, HZ + 2, tr.w / 2, tr.h, 0, 0, Math.PI, true);
+      }
+    }
+    sx.fill();
+    sx.fillRect(0, HZ - 3, W, 4);
+  }
+
+  const moon = () => [W * 0.7, HZ * 0.34, Math.min(W, H) * 0.042];
+
+  function launchShootingStar(t) {
+    shooting = { x: rand(W * 0.1, W * 0.55), y: rand(HZ * 0.05, HZ * 0.4), dx: rand(W * 0.25, W * 0.4), dy: rand(HZ * 0.15, HZ * 0.3), t0: t, dur: 1100 };
+  }
+
+  // ---------- the pond ----------
+  function drawWater(t) {
+    const WH = H - HZ, k = (HZ / WH) * 0.9;   // reflection is squashed a little, like real water seen at an angle
+    for (let y = 0; y < WH; y += 2) {
+      const p = y / WH;
+      let off = Math.sin(y * 0.09 - t * 0.0016) * (0.6 + p * 4) + Math.sin(y * 0.031 + t * 0.0009) * p * 3;
+      for (const r of ripples) {
+        const age = (t - r.t0) / 1000, d = Math.abs(HZ + y - r.y);
+        if (d < 50) off += Math.sin(d * 0.3 - age * 8) * r.amp * (1 - age / r.life) * (1 - d / 50) * 3;
+      }
+      const srcY = HZ - 1 - y * k;
+      if (srcY < 0) break;
+      // little wavelets catch the light unevenly, so the reflection breaks into bands
+      ctx.globalAlpha = clamp(0.62 + 0.38 * Math.sin(y * (0.35 - p * 0.22) - t * 0.0022) * Math.sin(y * 0.05 + t * 0.0007), 0.2, 1);
+      ctx.drawImage(sky, 0, srcY * DPR, W * DPR, Math.max(1, 2 * k * DPR), off - 12, HZ + y, W + 24, 2);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawTint() {
+    const g = ctx.createLinearGradient(0, HZ, 0, H);
+    g.addColorStop(0, 'rgba(8, 10, 34, .3)');
+    g.addColorStop(1, 'rgba(3, 4, 16, .72)');
+    ctx.fillStyle = g; ctx.fillRect(0, HZ, W, H - HZ);
+    ctx.fillStyle = 'rgba(180, 190, 255, .1)';
+    ctx.fillRect(0, HZ, W, 1);
+  }
+
+  // the moon's broken path of light across the water
+  function drawGlitter(t) {
+    const [mx] = moon(), WH = H - HZ, N = 46;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < N; i++) {
+      const q = i / N, y = HZ + 6 + Math.pow(q, 1.25) * WH * 0.9, p = persp(y);
+      const w = (5 + 34 * p) * (0.4 + 0.6 * Math.abs(Math.sin(t * 0.0021 + i * 1.7)));
+      const a = 0.3 * (1 - q * 0.8) * (0.3 + 0.7 * Math.abs(Math.sin(t * 0.0017 + i * 2.3)));
+      const x = mx + Math.sin(t * 0.0011 + i * 0.8) * (3 + 22 * p * q);
+      ctx.fillStyle = `rgba(225, 230, 255, ${a})`;
+      ctx.fillRect(x - w / 2, y, w, 1 + p);
+    }
+    ctx.restore();
+  }
+
+  function drawRipples(t) {
+    ctx.save();
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i], age = (t - r.t0) / 1000;
+      if (age > r.life) { ripples.splice(i, 1); continue; }
+      const p = persp(r.y), a = (1 - age / r.life) * 0.4 * Math.min(1, r.amp);
+      for (const f of [1, 0.62, 0.3]) {
+        const rad = age * r.speed * p * f;
+        if (rad < 1) continue;
+        ctx.strokeStyle = `rgba(200, 210, 255, ${a * f})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.ellipse(r.x, r.y, rad, rad * 0.3, 0, 0, 6.29); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // how much a passing ripple lifts the surface at (x, y)
+  function bob(x, y, t) {
+    let b = 0;
+    for (const r of ripples) {
+      const age = (t - r.t0) / 1000, p = persp(r.y);
+      const d = Math.hypot(x - r.x, (y - r.y) / 0.3), rad = age * r.speed * p, w = 26 * p;
+      if (Math.abs(d - rad) < w) b += Math.sin((d - rad) / w * Math.PI) * r.amp * (1 - age / r.life) * 2.5;
+    }
+    return b;
+  }
+
+  function addRipple(x, y, amp, t) {
+    ripples.push({ x, y, t0: t, amp, life: 2.2 + amp, speed: 60 + amp * 20 });
+    if (ripples.length > 30) ripples.shift();
+  }
+
+  // ---------- koi, gliding under the surface ----------
+  function drawKoi(t) {
+    for (const k of koi) {
+      const p = persp(k.y);
+      let want = null, rush = 1;
+      const fresh = ripples.filter(r => r.amp >= 1 && t - r.t0 < 5000 && Math.hypot(r.x - k.x, r.y - k.y) < 380);
+      if (fresh.length) {                                        // something landed: come and look
+        const r = fresh[fresh.length - 1];
+        if (Math.hypot(r.x - k.x, r.y - k.y) > 25) { want = Math.atan2((r.y - k.y) * 2, r.x - k.x); rush = 1.7; }
+      }
+      if (mouse.active && Math.hypot(mouse.x - k.x, mouse.y - k.y) < 70 * p) {   // a hand too close: dart away
+        want = Math.atan2((k.y - mouse.y) * 2, k.x - mouse.x); rush = 3.2;
+      }
+      if (k.x < 40 || k.x > W - 40 || k.y < HZ + 30 || k.y > H - 25) want = Math.atan2((HZ + (H - HZ) * 0.55 - k.y) * 2, W / 2 - k.x);
+      if (want !== null) k.ang -= clamp(angDiff(k.ang, want), -0.04, 0.04);
+      k.ang += rand(-0.025, 0.025);
+      k.rush = (k.rush || 1) + (rush - (k.rush || 1)) * 0.05;
+      const v = k.sp * k.rush * p;
+      k.x += Math.cos(k.ang) * v; k.y += Math.sin(k.ang) * v * 0.5;
+
+      const wig = Math.sin(t * 0.006 * k.rush + k.ph);
+      ctx.save();
+      ctx.translate(k.x, k.y);
+      ctx.scale(p, p * 0.5);
+      ctx.rotate(k.ang);
+      const col = k.pale ? 'hsla(40, 35%, 88%, .55)' : `hsla(${k.hue}, 88%, 58%, .55)`;
+      ctx.globalCompositeOperation = 'lighter';
+      const gl = ctx.createRadialGradient(0, 0, 0, 0, 0, 30);
+      gl.addColorStop(0, k.pale ? 'hsla(40, 40%, 80%, .1)' : `hsla(${k.hue}, 90%, 55%, .12)`);
+      gl.addColorStop(1, 'hsla(0, 0%, 0%, 0)');
+      ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(0, 0, 30, 0, 6.29); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.ellipse(0, 0, 14, 4.6, wig * 0.08, 0, 6.29); ctx.fill();
+      ctx.save(); ctx.translate(-12, 0); ctx.rotate(wig * 0.45);
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(-6, -2, -11, -6); ctx.lineTo(-8, 0); ctx.lineTo(-11, 6); ctx.quadraticCurveTo(-6, 2, 0, 0); ctx.fill();
+      ctx.restore();
+      ctx.beginPath(); ctx.ellipse(2, -5, 4, 1.6, -0.6 + wig * 0.2, 0, 6.29); ctx.ellipse(2, 5, 4, 1.6, 0.6 - wig * 0.2, 0, 6.29); ctx.fill();
+      if (!k.pale) { ctx.fillStyle = 'hsla(40, 40%, 92%, .35)'; ctx.beginPath(); ctx.ellipse(4, 0, 4, 2.2, 0, 0, 6.29); ctx.fill(); }
+      ctx.restore();
+    }
+  }
+
+  // ---------- lilies & lotus blooms ----------
+  function lotus(open, hue, pulse) {
+    const L = 27;
+    const layer = (n, spread, len, wid, light) => {
+      for (let i = 0; i < n; i++) {
+        ctx.save();
+        ctx.rotate((i / (n - 1) - 0.5) * spread);
+        const g = ctx.createLinearGradient(0, 0, 0, -len);
+        g.addColorStop(0, `hsla(${hue}, 60%, ${30 + light * 0.4}%, ${0.95 * pulse})`);
+        g.addColorStop(1, `hsla(${hue + 10}, 85%, ${light}%, ${0.95 * pulse})`);
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.bezierCurveTo(-wid, -len * 0.35, -wid * 0.6, -len * 0.85, 0, -len);
+        ctx.bezierCurveTo(wid * 0.6, -len * 0.85, wid, -len * 0.35, 0, 0);
+        ctx.fill();
+        ctx.restore();
+      }
+    };
+    layer(6, 0.5 + 2.0 * open, L, 10, 70);
+    layer(5, 0.2 + 1.25 * open, L * 0.78, 8.5, 86);
+    if (open > 0.45) {
+      ctx.fillStyle = `hsla(52, 100%, 78%, ${(open - 0.45) * 1.8 * pulse})`;
+      ctx.beginPath(); ctx.ellipse(0, -7, 4.2, 2.6, 0, 0, 6.29); ctx.fill();
+    }
+  }
+
+  function drawLilies(t) {
+    const order = lilies.map(l => l).sort((a, b) => a.fy - b.fy);
+    for (const l of order) {
+      const x = l.fx * W, by = HZ + l.fy * (H - HZ), p = persp(by);
+      const grow = easeOut(clamp((t - l.born) / 1600, 0, 1));
+      if (grow <= 0) continue;
+      const y = by - bob(x, by, t) + Math.sin(t * 0.0008 + l.seed) * 0.8;
+
+      // pad
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(p * grow, p * grow * 0.34);
+      ctx.rotate(l.rot + Math.sin(t * 0.0003 + l.seed) * 0.05);
+      ctx.fillStyle = 'hsl(152, 30%, 12%)';
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, l.r, 0.24, 6.28 - 0.24); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(160, 185, 255, .16)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(0, 0, l.r, 0.24, 6.28 - 0.24); ctx.stroke();
+      ctx.strokeStyle = 'rgba(120, 170, 140, .12)'; ctx.lineWidth = 1.2;
+      for (let i = 1; i < 6; i++) { const a = 0.24 + i * (6.28 - 0.48) / 6; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(a) * l.r * 0.85, Math.sin(a) * l.r * 0.85); ctx.stroke(); }
+      ctx.restore();
+
+      if (!l.bloom) continue;
+      if (l.open === undefined) { l.open = 0.25; l.sang = false; }
+      const near = mouse.active && Math.hypot(mouse.x - x, (mouse.y - y) * 1.4) < 140 * p;
+      l.open += ((near ? 1 : 0.22) - l.open) * (near ? 0.035 : 0.006);
+      if (l.open > 0.88 && !l.sang) {
+        l.sang = true;
+        chime(l.hue);
+        for (let i = 0; i < 10; i++) sparks.push({ x, y: y - 14 * p, vx: rand(-.6, .6), vy: rand(-1.1, -.2), life: 1, hue: l.hue });
+      }
+      if (l.open < 0.5) l.sang = false;
+      const open = l.open * grow, pulse = 0.85 + 0.15 * Math.sin(t * 0.0012 + l.seed);
+
+      // its reflection, then its glow, then the flower
+      ctx.save();
+      ctx.translate(x, y + 2); ctx.scale(p, -p * 0.7); ctx.globalAlpha = 0.22;
+      lotus(open, l.hue, pulse);
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const gr = 48 * p * (0.45 + open);
+      const g = ctx.createRadialGradient(x, y - 9 * p, 0, x, y - 9 * p, gr);
+      g.addColorStop(0, `hsla(${l.hue}, 90%, 65%, ${0.3 * pulse * (0.35 + 0.65 * open)})`);
+      g.addColorStop(1, `hsla(${l.hue}, 90%, 50%, 0)`);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y - 9 * p, gr, 0, 6.29); ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      ctx.translate(x, y - 1); ctx.scale(p * grow, p * grow);
+      lotus(open, l.hue, pulse);
+      ctx.restore();
+    }
+  }
+
+  // ---------- fireflies (and their reflections) ----------
+  function drawFireflies(t) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of fireflies) {
+      f.vx = clamp(f.vx + rand(-.03, .03), -.5, .5);
+      f.vy = clamp(f.vy + rand(-.02, .02), -.25, .25);
+      f.vh = clamp(f.vh + rand(-.04, .04), -.3, .3);
+      f.x += f.vx; f.sy += f.vy; f.h += f.vh;
+      if (f.x < -20) f.x = W + 20; if (f.x > W + 20) f.x = -20;
+      if (f.sy < HZ + 8) f.vy += 0.02; if (f.sy > H - 20) f.vy -= 0.02;
+      if (f.h < 8) f.vh += 0.05; if (f.h > 90) f.vh -= 0.05;
+      const a = Math.max(0, Math.sin(t * f.sp + f.ph));
+      if (a < 0.02) continue;
+      const p = persp(f.sy), y = f.sy - f.h * p, ry = f.sy + f.h * p * 0.85;
+      for (const [yy, s, al] of [[y, 9 * a * p + 2, 0.9 * a], [ry, 7 * a * p + 1.5, 0.28 * a]]) {
+        const g = ctx.createRadialGradient(f.x, yy, 0, f.x, yy, s);
+        g.addColorStop(0, `hsla(${f.hue}, 100%, 75%, ${al})`);
+        g.addColorStop(1, `hsla(${f.hue}, 100%, 50%, 0)`);
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, yy, s, 0, 6.29); ctx.fill();
+      }
+    }
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.x += s.vx; s.y += s.vy; s.vy *= 0.985; s.life -= 0.008;
+      if (s.life <= 0) { sparks.splice(i, 1); continue; }
+      ctx.fillStyle = `hsla(${s.hue}, 100%, 80%, ${s.life})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, 1.6 * s.life + 0.4, 0, 6.29); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---------- reeds in the foreground ----------
+  function drawReeds(t) {
+    ctx.save();
+    ctx.strokeStyle = ctx.fillStyle = '#030310';
+    ctx.lineCap = 'round';
+    for (const r of reeds) {
+      let target = 0;
+      if (mouse.active) {
+        const tx = r.x + r.lean * r.h, ty = H - r.h * 0.7, dx = tx - mouse.x, d = Math.hypot(dx, ty - mouse.y);
+        if (d < 150) target = Math.sign(dx || 1) * (1 - d / 150) * 0.5;
+      }
+      r.bv = (r.bv + (target - r.bend) * 0.06) * 0.88; r.bend += r.bv;
+      const sway = r.lean + r.bend + Math.sin(t * 0.0008 + r.seed) * 0.04;
+      const tipX = r.x + Math.sin(sway) * r.h, tipY = H + 4 - Math.cos(sway) * r.h;
+      ctx.lineWidth = r.cattail ? 2.4 : 1.8;
+      ctx.beginPath(); ctx.moveTo(r.x, H + 4);
+      ctx.quadraticCurveTo(r.x + Math.sin(sway * 0.3) * r.h * 0.5, H + 4 - r.h * 0.5, tipX, tipY);
+      ctx.stroke();
+      if (r.cattail) {
+        const cx = r.x + Math.sin(sway * 0.85) * r.h * 0.86, cy = H + 4 - Math.cos(sway * 0.85) * r.h * 0.86;
+        ctx.beginPath(); ctx.ellipse(cx, cy, 3.4, 12, sway * 0.85, 0, 6.29); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ---------- sound (synthesized live) ----------
+  let audio = null, soundOn = false;
+  const PENTA = [0, 3, 5, 7, 10, 12, 15, 17];          // A minor pentatonic, same key as the garden's music
+
+  function initAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    const ac = new AC();
+    const master = ac.createGain(); master.gain.value = 0; master.connect(ac.destination);
+    const delay = ac.createDelay(); delay.delayTime.value = 0.42;
+    const fb = ac.createGain(); fb.gain.value = 0.45;
+    const wet = ac.createGain(); wet.gain.value = 0.5;
+    delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
+
+    // a low, slow drone: the pond breathing
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 520;
+    const drone = ac.createGain(); drone.gain.value = 0.03;
+    const lfo = ac.createOscillator(); lfo.frequency.value = 0.07;
+    const lfoAmt = ac.createGain(); lfoAmt.gain.value = 0.014;
+    lfo.connect(lfoAmt); lfoAmt.connect(drone.gain); lfo.start();
+    for (const f of [110, 110.4, 164.8, 220.6]) {
+      const o = ac.createOscillator(); o.type = 'sine'; o.frequency.value = f; o.connect(lp); o.start();
+    }
+    lp.connect(drone); drone.connect(master);
+    return { ac, master, delay };
+  }
+
+  function voice(dest, pan) {
+    const { ac } = audio;
+    if (!ac.createStereoPanner) return dest;
+    const sp = ac.createStereoPanner(); sp.pan.value = pan; sp.connect(dest); return sp;
+  }
+
+  function chime(hue) {
+    if (!soundOn || !audio) return;
+    const { ac, master, delay } = audio;
+    const n = PENTA[Math.floor(((hue % 360) / 360) * PENTA.length) % PENTA.length];
+    const f = 440 * Math.pow(2, n / 12), now = ac.currentTime;
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.09, now + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 3);
+    g.connect(voice(master, rand(-0.6, 0.6))); g.connect(delay);
+    for (const [mul, type] of [[1, 'sine'], [2.01, 'triangle']]) {
+      const o = ac.createOscillator(); o.type = type; o.frequency.value = f * mul;
+      const og = ac.createGain(); og.gain.value = mul === 1 ? 1 : 0.25;
+      o.connect(og); og.connect(g); o.start(now); o.stop(now + 3.1);
+    }
+  }
+
+  // a drop into still water: a quick upward sweep
+  function plip(x) {
+    if (!soundOn || !audio) return;
+    const { ac, master, delay } = audio, now = ac.currentTime;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(rand(500, 700), now);
+    o.frequency.exponentialRampToValueAtTime(rand(1300, 1700), now + 0.09);
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.14, now + 0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+    o.connect(g); g.connect(voice(master, clamp(x / W * 2 - 1, -0.9, 0.9))); g.connect(delay);
+    o.start(now); o.stop(now + 0.2);
+  }
+
+  // a frog somewhere along the bank
+  function frog() {
+    const { ac, master } = audio, t0 = ac.currentTime + 0.05;
+    const base = rand(85, 140), n = 2 + Math.floor(rand(0, 5));
+    const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 600; lp.Q.value = 6;
+    const out = ac.createGain(); out.gain.value = 0.05;
+    lp.connect(out); out.connect(voice(master, rand(-0.9, 0.9)));
+    for (let i = 0; i < n; i++) {
+      const t = t0 + i * rand(0.11, 0.16), o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'square'; o.frequency.setValueAtTime(base * 1.1, t); o.frequency.exponentialRampToValueAtTime(base, t + 0.07);
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(1, t + 0.01); g.gain.linearRampToValueAtTime(0, t + 0.08);
+      o.connect(g); g.connect(lp); o.start(t); o.stop(t + 0.1);
+    }
+  }
+  setInterval(() => { if (audio && soundOn && Math.random() < 0.05) frog(); }, 300);
+
+  function toggleSound() {
+    if (!audio) audio = initAudio();
+    if (!audio) { toast('No audio support in this browser'); return; }
+    audio.ac.resume();
+    soundOn = !soundOn;
+    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, audio.ac.currentTime, 0.6);
+    toast(soundOn ? 'sound on' : 'sound off');
+  }
+
+  // ---------- wishes ----------
+  const WISHES = [
+    'The water holds the moon without trying to.',
+    'Still water clears on its own. So do most nights.',
+    'You don’t have to sleep. Just rest here a while.',
+    'Every ripple settles eventually.',
+    'The koi aren’t in a hurry. Neither is morning.',
+    'Whatever kept you up can wait until daylight.',
+    'Breathe out slowly. Watch the water go still.',
+    'Lotus flowers grow out of mud. Just saying.',
+    'Nothing here is keeping score.',
+    'You found somewhere quiet. Good call.'
+  ];
+  let wishIdx = Math.floor(Math.random() * WISHES.length);
+  function wish(t) {
+    launchShootingStar(t);
+    wishIdx = (wishIdx + 1) % WISHES.length;
+    toast(WISHES[wishIdx], 6500);
+  }
+
+  let toastTimer = 0;
+  function toast(msg, ms = 1600) {
+    toastEl.textContent = msg; toastEl.style.opacity = 1;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.style.opacity = 0, ms);
+  }
+
+  // ---------- input ----------
+  const mouse = { x: -999, y: -999, active: false };
+  let lastT = 0, lastTrail = 0;
+  window.addEventListener('pointermove', e => {
+    const sp = mouse.active ? Math.hypot(e.clientX - mouse.x, e.clientY - mouse.y) : 0;
+    mouse.active = true; mouse.x = e.clientX; mouse.y = e.clientY;
+    if (e.clientY > HZ + 6 && sp > 9 && lastT - lastTrail > 140) {     // trailing a finger through the water
+      lastTrail = lastT; addRipple(e.clientX, e.clientY, 0.45, lastT);
+    }
+  });
+  document.addEventListener('pointerleave', () => { mouse.active = false; });
+  window.addEventListener('blur', () => { mouse.active = false; });
+  cv.addEventListener('pointerdown', e => {
+    if (e.clientY > HZ + 8) {
+      lilies.push(newLily(e.clientX / W, (e.clientY - HZ) / (H - HZ), Math.random() < 0.65, lastT));
+      if (lilies.length > 60) lilies.shift();
+      saveLilies();
+      addRipple(e.clientX, e.clientY, 1.4, lastT);
+      plip(e.clientX);
+    } else wish(lastT);
+    if (hud.style.opacity !== '0') setTimeout(() => hud.style.opacity = 0.35, 400);
+  });
+  window.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (k === 's') toggleSound();
+    else if (k === 'w') wish(lastT);
+    else if (k === 'c') { lilies = []; saveLilies(); toast('the pond is still again'); }
+    else if (k === 'h') hud.style.opacity = hud.style.opacity === '0' ? 1 : 0;
+    else if (k === 'g') location.href = 'index.html';
+  });
+  window.addEventListener('resize', resize);
+
+  // ---------- loop ----------
+  function frame(t) {
+    lastT = t;
+    if (W < 2 || HZ < 2) { if (innerWidth > 1 && innerHeight > 1) resize(); return requestAnimationFrame(frame); }
+    drawSky(t);
+    ctx.drawImage(sky, 0, 0, W, HZ);
+    drawWater(t);
+    drawKoi(t);
+    drawTint();
+    drawGlitter(t);
+    drawRipples(t);
+    drawLilies(t);
+    drawFireflies(t);
+    drawReeds(t);
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

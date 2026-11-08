@@ -1,0 +1,1000 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The High Pond</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #04050d; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; touch-action: none; }
+  #hud {
+    position: fixed; left: 50%; top: 28px; transform: translateX(-50%); width: min(92vw, 640px);
+    font: 300 15px/1.6 Georgia, "Times New Roman", serif; letter-spacing: .04em;
+    color: rgba(220, 225, 255, .78); text-align: center; pointer-events: none;
+    transition: opacity 1.6s ease; text-shadow: 0 0 12px rgba(120,140,255,.4);
+  }
+  #hud b { font-weight: 400; color: #fff; }
+  #hud small { display: block; margin-top: 6px; font-size: 12px; opacity: .65; letter-spacing: .08em; }
+  #breath {
+    position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%);
+    font: 300 18px Georgia, serif; letter-spacing: .2em; color: rgba(230,235,255,.85);
+    pointer-events: none; opacity: 0; transition: opacity 1s ease;
+  }
+  #toast {
+    position: fixed; left: 50%; bottom: 7vh; transform: translateX(-50%); width: min(90vw, 560px);
+    font: italic 15px/1.5 Georgia, serif; letter-spacing: .03em; text-align: center;
+    color: rgba(225,230,255,.8); text-shadow: 0 0 14px rgba(120,140,255,.5);
+    opacity: 0; transition: opacity 1.2s ease; pointer-events: none;
+  }
+  #back {
+    position: fixed; left: 18px; bottom: 16px; font: 12px Georgia, serif; letter-spacing: .08em;
+    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease;
+  }
+  #back:hover, #up:hover { color: rgba(220,228,255,.85); }
+  #up { position: fixed; left: 18px; bottom: 36px; font: 12px Georgia, serif; letter-spacing: .08em;
+    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease; }
+  #namer {
+    position: fixed; left: 50%; top: 30%; transform: translate(-50%, -50%); display: none;
+    font: italic 20px Georgia, serif; letter-spacing: .04em; text-align: center;
+    color: #eef0ff; background: rgba(10, 12, 32, .72); border: 1px solid rgba(180, 190, 255, .3);
+    border-radius: 8px; padding: 10px 16px; width: min(80vw, 420px); outline: none;
+    box-shadow: 0 0 40px rgba(110, 130, 255, .25);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  Click the water to float a lantern. Join stars to draw a constellation.
+  <small>click the last star again to finish &nbsp;·&nbsp; <b>R</b> rename &nbsp;·&nbsp; <b>Backspace</b> undo &nbsp;·&nbsp; <b>Esc</b> cancel<br>
+  <b>S</b> sound &nbsp;·&nbsp; <b>M</b> music &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>B</b> breathe &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>H</b> hide this</small>
+</div>
+<div id="breath"></div>
+<div id="toast"></div>
+<a id="up" href="hill.html">up the hill &uarr;</a>
+<input id="namer" maxlength="40" spellcheck="false" autocomplete="off">
+<a id="back" href="index.html">&larr; back to the garden</a>
+<audio id="track" src="music/moon_pond.mp3" loop preload="auto"></audio>
+
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const hud = document.getElementById('hud');
+  const breathEl = document.getElementById('breath');
+  const toastEl = document.getElementById('toast');
+  const namer = document.getElementById('namer');
+  let W = 0, H = 0, HY = 0, DPR = 1;        // HY: the waterline
+
+  // ---------- helpers ----------
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const easeOut = t => 1 - Math.pow(1 - t, 3);
+  const easeInOut = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+  function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  function load(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch (e) { return d; } }
+  const pick = a => a[Math.floor(Math.random() * a.length)];
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  function segDist(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy || 1;
+    const k = clamp(((px - ax) * dx + (py - ay) * dy) / L, 0, 1);
+    return Math.hypot(px - ax - dx * k, py - ay - dy * k);
+  }
+
+  // Everything above the waterline is drawn to its own canvas, then mirrored into the pond
+  const up = document.createElement('canvas'), uctx = up.getContext('2d');
+  let skyBg = null;                          // gradient + milky way, rendered once per resize
+
+
+
+  // ---------- world ----------
+  const HUES = [190, 205, 265, 285, 320, 340, 45, 160];   // the garden's flower colours
+  let stars = [], trees = [], bankFlowers = [], reeds = [], fireflies = [], fish = [];
+  let lanterns = [], ripples = [], shooting = null, moonCv = null;
+
+  // ---------- the turning sky: the hilltop's sky, same stars, same clock ----------
+  // It turns once every three hours around the pole star. Stars are a fixed seeded catalogue
+  // (shared with hill.html), so constellations made up on the hill can be picked up and
+  // added to here, and the other way round.
+  const SKY_PERIOD = 3 * 3600 * 1000;
+  const skyAngle = () => -2 * Math.PI * ((Date.now() % SKY_PERIOD) / SKY_PERIOD);
+  let PX = 0, PY = 0, R = 0, milky = null, tree = null;
+  function poleLayout(skyH) { PX = W * 0.5; PY = skyH * 0.26; R = Math.hypot(W * 0.5, skyH * 0.74); }
+  const CAT = (() => {
+    const rnd = mulberry32(20261108), out = [];
+    out.push({ r: 0, th: 0, size: 1.7, hue: 215, sat: 30, tw: 0.0009, ph: 1, pole: true });
+    for (let i = 0; i < 900; i++) {
+      const b = rnd();
+      const size = b < 0.82 ? 0.35 + rnd() * 0.6 : b < 0.96 ? 0.95 + rnd() * 0.55 : 1.5 + rnd() * 0.9;
+      const warm = rnd() < 0.22;
+      out.push({ r: Math.sqrt(rnd()) * 1.02, th: rnd() * Math.PI * 2, size,
+                 hue: warm ? 28 + rnd() * 20 : 205 + rnd() * 30, sat: warm ? 55 : 35 + rnd() * 30,
+                 tw: 0.0004 + rnd() * 0.0018, ph: rnd() * 6.28 });
+    }
+    for (let i = 0; i < 1400; i++) {
+      const s = rnd() * 2.4 - 1.2, off = (rnd() + rnd() + rnd() - 1.5) * 0.11;
+      const x = s * 0.83 - off * 0.56 + 0.18, y = s * 0.56 + off * 0.83 - 0.05;
+      out.push({ r: Math.hypot(x, y), th: Math.atan2(y, x), size: 0.25 + rnd() * 0.35, dust: true,
+                 hue: 215 + rnd() * 40, sat: 30, tw: 0.0005 + rnd() * 0.001, ph: rnd() * 6.28 });
+    }
+    return out;
+  })();
+  const pos = new Float32Array(CAT.length * 2);
+
+  function buildMilky() {
+    const MS = 0.5, size = Math.ceil(R * 2.1 * MS);
+    milky = document.createElement('canvas'); milky.width = milky.height = size;
+    const m = milky.getContext('2d'), rnd = mulberry32(7);
+    m.translate(size / 2, size / 2); m.scale(R * MS, R * MS);
+    m.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 70; i++) {
+      const s = i / 69 * 2.4 - 1.2, off = (rnd() - 0.5) * 0.12;
+      const x = s * 0.83 - off * 0.56 + 0.18, y = s * 0.56 + off * 0.83 - 0.05;
+      const r = 0.07 + rnd() * 0.12, hue = 220 + rnd() * 50;
+      const g = m.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, `hsla(${hue}, 55%, 70%, ${0.035 + rnd() * 0.03})`);
+      g.addColorStop(1, `hsla(${hue}, 55%, 50%, 0)`);
+      m.fillStyle = g; m.beginPath(); m.arc(x, y, r, 0, 6.29); m.fill();
+    }
+    m.globalCompositeOperation = 'destination-out';
+    for (let i = 0; i < 18; i++) {
+      const s = rnd() * 2 - 1, x = s * 0.83 + 0.18 + (rnd() - 0.5) * 0.03, y = s * 0.56 - 0.05 + (rnd() - 0.5) * 0.03;
+      const r = 0.03 + rnd() * 0.05, g = m.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, 'rgba(0,0,0,.45)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      m.fillStyle = g; m.beginPath(); m.arc(x, y, r, 0, 6.29); m.fill();
+    }
+  }
+
+  let glowSprite = null;
+  function glow() {
+    if (glowSprite) return glowSprite;
+    const g0 = document.createElement('canvas'); g0.width = g0.height = 64;
+    const g = g0.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.15, 'rgba(255,255,255,.45)');
+    gr.addColorStop(0.5, 'rgba(255,255,255,.08)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    return glowSprite = g0;
+  }
+
+  function drawStars(c, t) {
+    const ang = skyAngle(), ca = Math.cos(ang), sa = Math.sin(ang);
+    c.save(); c.translate(PX, PY); c.rotate(ang);
+    c.drawImage(milky, -milky.width, -milky.height, milky.width * 2, milky.height * 2);
+    c.restore();
+    for (let i = 0; i < CAT.length; i++) {
+      const s = CAT[i], co = Math.cos(s.th), sn = Math.sin(s.th);
+      pos[i * 2] = PX + R * s.r * (co * ca - sn * sa);
+      pos[i * 2 + 1] = PY + R * s.r * (sn * ca + co * sa);
+    }
+    c.save(); c.globalCompositeOperation = 'lighter';
+    const spr = glow();
+    for (let i = 0; i < CAT.length; i++) {
+      const s = CAT[i], x = pos[i * 2], y = pos[i * 2 + 1];
+      if (x < -20 || x > W + 20 || y < -20 || y > HY) continue;
+      const haze = clamp((HY - y) / (HY * 0.18), 0, 1) * 0.75 + 0.25;
+      const a = (0.55 + 0.45 * Math.sin(t * s.tw + s.ph)) * haze;
+      if (s.dust) { c.fillStyle = `hsla(${s.hue}, 30%, 85%, ${a * 0.5})`; c.fillRect(x, y, s.size * 1.3, s.size * 1.3); continue; }
+      c.fillStyle = `hsla(${s.hue}, ${s.sat}%, 88%, ${a * 0.95})`;
+      c.beginPath(); c.arc(x, y, s.size, 0, 6.29); c.fill();
+      if (s.size > 1.2) {
+        const r = s.size * 7;
+        c.globalAlpha = a * 0.5; c.drawImage(spr, x - r, y - r, r * 2, r * 2); c.globalAlpha = 1;
+      }
+    }
+    c.restore();
+  }
+
+  // the hilltop's lone tree, standing on the far bank now
+  function makeTree() {
+    const rnd = mulberry32(42), x = W * 0.8, base = bankY(x) + 2, h = Math.min(HY * 0.3, W * 0.3, 125);
+    function branch(len, ang, depth) {
+      const b = { len, ang, kids: [], depth, leaf: depth >= 5 };
+      if (depth < 6) {
+        const n = depth < 2 ? 2 : 2 + (rnd() < 0.35 ? 1 : 0);
+        for (let i = 0; i < n; i++) {
+          const spread = (i - (n - 1) / 2) * (0.5 + rnd() * 0.25) + (rnd() - 0.5) * 0.25;
+          b.kids.push(branch(len * (0.68 + rnd() * 0.12), spread - (depth === 0 ? 0.08 : 0), depth + 1));
+        }
+      }
+      return b;
+    }
+    return { x, base, h, root: branch(h * 0.34, -0.04, 0) };
+  }
+  function drawTree(c, t) {
+    const sw = Math.sin(t * 0.0006) * 0.015 + wind * 0.01, k = tree.h / 190;
+    c.fillStyle = c.strokeStyle = '#0a0921'; c.lineCap = 'round';
+    const go = (b, x, y, a) => {
+      const aa = a + b.ang + sw * b.depth * (1 + 0.3 * Math.sin(t * 0.0013 + b.depth));
+      const x2 = x + Math.sin(aa) * b.len, y2 = y - Math.cos(aa) * b.len;
+      c.lineWidth = Math.max(0.6, 7 * k * Math.pow(0.62, b.depth));
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x2, y2); c.stroke();
+      if (b.leaf) { c.beginPath(); c.arc(x2, y2, (4 + (b.depth === 6 ? 2 : 0)) * Math.max(0.6, k), 0, 6.29); c.fill(); }
+      for (const kid of b.kids) go(kid, x2, y2, aa);
+    };
+    go(tree.root, tree.x, tree.base, 0);
+  }
+
+  // ---------- constellations ----------
+  let consts = load('nightgarden.constellations', []);
+  let cur = null, hovered = null, hoverStar = -1, shownName = null, flare = null, clearArmed = 0, lastMade = null, renaming = null;
+  function saveConsts() { store('nightgarden.constellations', consts); }
+  window.addEventListener('storage', e => { if (e.key === 'nightgarden.constellations') consts = load(e.key, []); });
+
+  const ADJ = ['Sleepy', 'Patient', 'Quiet', 'Wandering', 'Small', 'Unhurried', 'Gentle', 'Borrowed',
+               'Faraway', 'Kind', 'Little', 'Old', 'Second', 'Dreaming', 'Lantern-lit', 'Drifting'];
+  const NOUNS = {
+    2: ['Bridge', 'Thread', 'Pair', 'Promise', 'Footbridge', 'Two Friends'],
+    3: ['Kite', 'Paper Boat', 'Teacup', 'Sparrow', 'Arrowhead', 'Lily'],
+    4: ['Fox', 'Kite', 'Moth', 'Hare', 'Teapot', 'Rowing Boat'],
+    6: ['Heron', 'Lantern', 'Sleeping Cat', 'Harp', 'Swan', 'Koi', 'Wren', 'Dipper', 'Frog'],
+    99: ['Whale', 'Long River', 'Great Owl', 'Dragon', 'Ship', 'Stag', 'Ferryman', 'Lighthouse Keeper', 'Great Koi']
+  };
+  const LOOPS = ['Window', 'Kettle', 'Nest', 'Lantern', 'Pond', 'Ring', 'Teacup', 'Lily Pad'];
+  const PLACES = ['the Small Hours', 'the High Pond', 'the Long Night', 'the Garden', 'Still Water', 'Home', 'Late Autumn'];
+  function makeName(n, closed) {
+    const key = n <= 2 ? 2 : n <= 3 ? 3 : n <= 4 ? 4 : n <= 7 ? 6 : 99;
+    const noun = closed && Math.random() < 0.6 ? pick(LOOPS) : pick(NOUNS[key]);
+    const r = Math.random();
+    if (r < 0.55) return `The ${pick(ADJ)} ${noun}`;
+    if (r < 0.8) return `The ${noun} of ${pick(PLACES)}`;
+    return `The ${noun}`;
+  }
+
+  function starAt(x, y, touch) {
+    let best = -1, bestScore = touch ? 40 : 26;
+    for (let i = 0; i < CAT.length; i++) {
+      const s = CAT[i]; if (s.dust) continue;
+      const sx = pos[i * 2], sy = pos[i * 2 + 1];
+      if (sx < -10 || sx > W + 10 || sy < -10 || sy > bankY(sx) - 8) continue;
+      const d = Math.hypot(sx - x, sy - y);
+      if (d > bestScore + 6) continue;
+      const score = d - s.size * 5;
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    return best;
+  }
+  function constAt(x, y) {
+    let best = null, bd = 14;
+    for (const k of consts) for (const [a, b] of k.edges) {
+      const ia = k.idx[a], ib = k.idx[b];
+      const d = segDist(x, y, pos[ia * 2], pos[ia * 2 + 1], pos[ib * 2], pos[ib * 2 + 1]);
+      if (d < bd) { bd = d; best = k; }
+    }
+    return best;
+  }
+  function addStar(i) {
+    if (!cur) { cur = { idx: [i], edges: [], closed: false }; starNote(i); return; }
+    const a = cur.lastAt ?? cur.idx.length - 1;
+    if (i === cur.idx[a]) return finish();
+    let j = cur.idx.indexOf(i);
+    if (j < 0) { cur.idx.push(i); j = cur.idx.length - 1; } else cur.closed = true;
+    if (!cur.edges.some(([p, q]) => (p === a && q === j) || (p === j && q === a))) cur.edges.push([a, j]);
+    cur.lastAt = j;
+    starNote(i);
+  }
+  function undo() {
+    if (!cur) return;
+    const e = cur.edges.pop();
+    if (!e) { cur = null; toast('let go'); return; }
+    const [a, b] = e;
+    if (b === cur.idx.length - 1 && !cur.edges.some(([p, q]) => p === b || q === b)) cur.idx.pop();
+    cur.lastAt = a;
+  }
+  function finish() {
+    if (!cur) return;
+    if (!cur.edges.length) { cur = null; return; }
+    const k = { name: makeName(cur.idx.length, cur.closed), idx: cur.idx.slice(), edges: cur.edges.map(e => e.slice()),
+                pts: cur.idx.map(i => [+CAT[i].r.toFixed(5), +CAT[i].th.toFixed(5)]), made: Date.now() };
+    consts.push(k); if (consts.length > 40) consts.shift();
+    saveConsts();
+    cur = null; flare = { k, t0: lastT }; shownName = { k, until: lastT + 6000 }; lastMade = k;
+    arpeggio(k);
+    toast(`You found ${k.name}.  (R to rename it)`, 5000);
+  }
+  function startRename(k) {
+    if (!k) return;
+    renaming = k; namer.value = k.name; namer.style.display = 'block'; namer.focus(); namer.select();
+  }
+  function endRename() { renaming = null; namer.style.display = 'none'; namer.blur(); }
+  namer.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      const v = namer.value.trim();
+      if (v && renaming) { renaming.name = v; saveConsts(); shownName = { k: renaming, until: lastT + 5000 }; }
+      endRename();
+    } else if (e.key === 'Escape') endRename();
+  });
+  namer.addEventListener('blur', () => endRename());
+
+  function line(c, ia, ib) { c.moveTo(pos[ia * 2], pos[ia * 2 + 1]); c.lineTo(pos[ib * 2], pos[ib * 2 + 1]); }
+  // lines and star-glows go on the sky canvas, so the pond reflects them
+  function drawConstellations(c, t) {
+    c.save(); c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
+    const spr = glow();
+    for (const k of consts) {
+      const hot = k === hovered || (shownName && shownName.k === k && lastT < shownName.until);
+      let fl = 0;
+      if (flare && flare.k === k) { fl = 1 - (t - flare.t0) / 2500; if (fl <= 0) { flare = null; fl = 0; } }
+      c.strokeStyle = `rgba(185, 200, 255, ${0.3 + (hot ? 0.3 : 0) + fl * 0.6 + 0.04 * Math.sin(t * 0.001 + k.made)})`;
+      c.lineWidth = 1 + fl;
+      c.beginPath(); for (const [p, q] of k.edges) line(c, k.idx[p], k.idx[q]); c.stroke();
+      for (const i of k.idx) {
+        const x = pos[i * 2], y = pos[i * 2 + 1], r = 9 + (hot ? 4 : 0) + fl * 10;
+        c.globalAlpha = 0.55 + (hot ? 0.3 : 0) + fl * 0.45; c.drawImage(spr, x - r, y - r, r * 2, r * 2); c.globalAlpha = 1;
+      }
+    }
+    if (cur) {
+      const li = cur.idx[cur.lastAt ?? cur.idx.length - 1];
+      c.strokeStyle = 'rgba(215, 225, 255, .75)'; c.lineWidth = 1.3;
+      c.beginPath(); for (const [p, q] of cur.edges) line(c, cur.idx[p], cur.idx[q]); c.stroke();
+      for (const i of cur.idx) {
+        const x = pos[i * 2], y = pos[i * 2 + 1], r = i === li ? 13 + 2 * Math.sin(t * 0.004) : 10;
+        c.globalAlpha = 0.7; c.drawImage(spr, x - r, y - r, r * 2, r * 2); c.globalAlpha = 1;
+      }
+    }
+    c.restore();
+  }
+  // the parts that belong to you, not the sky: the line following your cursor, the hover ring, the names
+  function updateHover() {
+    hoverStar = mouse.active && mouse.y < HY ? starAt(mouse.x, mouse.y, mouse.touch) : -1;
+    hovered = mouse.active && mouse.y < HY && !cur && hoverStar < 0 ? constAt(mouse.x, mouse.y) : null;
+    cv.style.cursor = hoverStar >= 0 ? 'pointer' : 'crosshair';
+  }
+  function drawOverlay(t) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    if (cur && mouse.active && mouse.y < HY) {
+      const li = cur.idx[cur.lastAt ?? cur.idx.length - 1];
+      const tx = hoverStar >= 0 ? pos[hoverStar * 2] : mouse.x, ty = hoverStar >= 0 ? pos[hoverStar * 2 + 1] : mouse.y;
+      const g = ctx.createLinearGradient(pos[li * 2], pos[li * 2 + 1], tx, ty);
+      g.addColorStop(0, 'rgba(215, 225, 255, .5)'); g.addColorStop(1, `rgba(215, 225, 255, ${hoverStar >= 0 ? .5 : .08})`);
+      ctx.strokeStyle = g; ctx.lineWidth = 1.3; ctx.setLineDash([3, 5]);
+      ctx.beginPath(); ctx.moveTo(pos[li * 2], pos[li * 2 + 1]); ctx.lineTo(tx, ty); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (hoverStar >= 0) {
+      ctx.strokeStyle = `rgba(220, 228, 255, ${0.35 + 0.15 * Math.sin(t * 0.005)})`; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.arc(pos[hoverStar * 2], pos[hoverStar * 2 + 1], 7, 0, 6.29); ctx.stroke();
+    }
+    ctx.restore();
+    const nk = hovered || (shownName && lastT < shownName.until ? shownName.k : null);
+    if (nk) {
+      let cx = 0, top = 1e9;
+      for (const i of nk.idx) { cx += pos[i * 2]; top = Math.min(top, pos[i * 2 + 1]); }
+      cx /= nk.idx.length;
+      const fade = hovered === nk ? 1 : clamp((shownName.until - lastT) / 1200, 0, 1);
+      ctx.font = 'italic 14px Georgia, serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(225, 230, 255, ${0.8 * fade})`;
+      ctx.shadowColor = 'rgba(120, 140, 255, .6)'; ctx.shadowBlur = 12;
+      ctx.fillText(nk.name, clamp(cx, 90, W - 90), clamp(top - 18, 22, HY - 10));
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  const depth = y => clamp((y - HY) / (H - HY), 0, 1);    // 0 at the far bank, 1 at your feet
+  const scaleAt = y => 0.3 + 1.0 * depth(y);
+  function bankY(x) {
+    return HY - 10 - Math.sin(x * 0.0031 + 1) * 9 - Math.sin(x * 0.012) * 4;
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight; HY = Math.round(H * 0.52);
+    cv.width = W * DPR; cv.height = H * DPR;
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    up.width = W * DPR; up.height = HY * DPR;
+    uctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    moonCv = null;
+
+    // sky backdrop with a faint milky way
+    skyBg = document.createElement('canvas');
+    skyBg.width = W * DPR; skyBg.height = HY * DPR;
+    const s = skyBg.getContext('2d'); s.scale(DPR, DPR);
+    const g = s.createLinearGradient(0, 0, 0, HY);
+    g.addColorStop(0, '#04050d'); g.addColorStop(0.6, '#0b1030'); g.addColorStop(1, '#1d1844');
+    s.fillStyle = g; s.fillRect(0, 0, W, HY);
+    poleLayout(HY * 1.25);
+    buildMilky();
+
+    // the far bank: a few rounded trees, and the night garden glowing between them
+    trees = [];
+    for (let x = rand(-20, 60); x < W + 40; x += rand(70, 190)) {
+      const h = rand(18, 46);
+      trees.push({ x, h, blobs: Array.from({ length: 4 }, () => [rand(-h * 0.35, h * 0.35), rand(-h * 0.25, h * 0.2), rand(h * 0.25, h * 0.42)]) });
+    }
+    bankFlowers = Array.from({ length: Math.floor(W / 28) }, () => {
+      const x = rand(0, W);
+      return { x, y: bankY(x) - rand(1, 7), hue: HUES[Math.floor(Math.random() * HUES.length)], ph: rand(0, 6.28), r: rand(0.8, 1.6) };
+    });
+
+    // reeds framing the near corners
+    reeds = [];
+    const clump = (x0, x1, n) => { for (let i = 0; i < n; i++) {
+      reeds.push({ x: rand(x0, x1), h: rand(H * 0.12, H * 0.3), lean: rand(-0.12, 0.12), ph: rand(0, 6.28),
+                   tail: Math.random() < 0.35, bend: 0, bv: 0 });
+    } };
+    const cw = Math.max(70, W * 0.1);
+    clump(-10, cw, 14); clump(W - cw, W + 10, 12);
+
+    tree = makeTree();
+    if (!fireflies.length) fireflies = Array.from({ length: 22 }, makeFirefly);
+    if (!fish.length) fish = [[24, 0.05], [42, 0.08], [0, 0.0]].map(([hue, sat]) => ({
+      x: rand(W * 0.2, W * 0.8), y: rand(HY + (H - HY) * 0.3, H * 0.92), a: rand(0, 6.28),
+      sp: rand(0.35, 0.55), hue, white: !sat, ph: rand(0, 6.28), len: rand(46, 62)
+    }));
+  }
+
+  // fireflies live in 3-D: a spot on the pond (x, wy) and a height above it, so they get real reflections
+  function makeFirefly() {
+    return { x: Math.random() * W, wy: rand(HY + 6, H), h: rand(12, 90),
+             vx: rand(-.2, .2), vy: rand(-.1, .1), vh: 0, ph: rand(0, 6.28), sp: rand(0.0015, 0.004), hue: rand(55, 85) };
+  }
+
+  // ---------- above the water ----------
+  function drawUpper(t) {
+    const c = uctx;
+    c.drawImage(skyBg, 0, 0, W, HY);
+
+    drawStars(c, t);
+    drawConstellations(c, t);
+
+    // crescent moon
+    const mx = W * 0.77, my = HY * 0.3, mr = Math.min(W, H) * 0.045;
+    const mg = c.createRadialGradient(mx, my, mr * 0.6, mx, my, mr * 5);
+    mg.addColorStop(0, 'rgba(210, 215, 255, .18)');
+    mg.addColorStop(1, 'rgba(210, 215, 255, 0)');
+    c.fillStyle = mg; c.beginPath(); c.arc(mx, my, mr * 5, 0, 6.29); c.fill();
+    if (!moonCv || moonCv._r !== mr) {
+      moonCv = document.createElement('canvas'); moonCv._r = mr;
+      moonCv.width = moonCv.height = Math.ceil(mr * 2 * DPR) + 4;
+      const m = moonCv.getContext('2d'); m.scale(DPR, DPR);
+      m.fillStyle = '#e9ebff'; m.beginPath(); m.arc(mr + 1, mr + 1, mr, 0, 6.29); m.fill();
+      m.globalCompositeOperation = 'destination-out';
+      m.beginPath(); m.arc(mr + 1 + mr * 0.42, mr + 1 - mr * 0.18, mr * 0.92, 0, 6.29); m.fill();
+    }
+    c.drawImage(moonCv, mx - mr - 1, my - mr - 1, moonCv.width / DPR, moonCv.height / DPR);
+
+    // shooting star
+    if (shooting) {
+      const k = (t - shooting.t0) / shooting.dur;
+      if (k >= 1) shooting = null;
+      else {
+        const x = shooting.x + shooting.dx * k, y = shooting.y + shooting.dy * k;
+        const tail = c.createLinearGradient(x, y, x - shooting.dx * 0.18, y - shooting.dy * 0.18);
+        tail.addColorStop(0, `rgba(255,255,255,${1 - k})`);
+        tail.addColorStop(1, 'rgba(255,255,255,0)');
+        c.strokeStyle = tail; c.lineWidth = 2;
+        c.beginPath(); c.moveTo(x, y); c.lineTo(x - shooting.dx * 0.18, y - shooting.dy * 0.18); c.stroke();
+      }
+    } else if (Math.random() < 0.0008) launchShootingStar(t);
+
+    // the far bank
+    c.fillStyle = '#0a0921';
+    for (const tr of trees) {
+      const by = bankY(tr.x);
+      c.fillRect(tr.x - 1.5, by - tr.h * 0.5, 3, tr.h * 0.5);
+      for (const [dx, dy, r] of tr.blobs) { c.beginPath(); c.arc(tr.x + dx, by - tr.h * 0.7 + dy, r, 0, 6.29); c.fill(); }
+    }
+    c.beginPath(); c.moveTo(0, HY);
+    for (let x = 0; x <= W; x += 8) c.lineTo(x, bankY(x));
+    c.lineTo(W, HY); c.fill();
+    drawTree(c, t);
+
+    // ...and the garden over there, still glowing
+    c.save(); c.globalCompositeOperation = 'lighter';
+    for (const f of bankFlowers) {
+      const p = 0.6 + 0.4 * Math.sin(t * 0.0012 + f.ph), r = f.r * 5;
+      const g = c.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+      g.addColorStop(0, `hsla(${f.hue}, 90%, 75%, ${0.75 * p})`);
+      g.addColorStop(1, `hsla(${f.hue}, 90%, 50%, 0)`);
+      c.fillStyle = g; c.beginPath(); c.arc(f.x, f.y, r, 0, 6.29); c.fill();
+    }
+    c.restore();
+  }
+
+  function launchShootingStar(t) {
+    shooting = { x: rand(W * 0.1, W * 0.6), y: rand(HY * 0.05, HY * 0.4), dx: rand(W * 0.25, W * 0.4), dy: rand(HY * 0.15, HY * 0.3), t0: t, dur: 1100 };
+  }
+
+  // ---------- the pond ----------
+  function drawWater(t) {
+    const WH = H - HY;
+    const g = ctx.createLinearGradient(0, HY, 0, H);
+    g.addColorStop(0, '#0d0c26'); g.addColorStop(1, '#03040b');
+    ctx.fillStyle = g; ctx.fillRect(0, HY, W, WH);
+
+    // the reflection, a thin strip at a time, each strip nudged sideways by the swell
+    for (let d = 0; d < WH; d += 2) {
+      const sy = HY - d - 2;
+      if (sy < 0) break;
+      const k = d / WH, y = HY + d;
+      let off = Math.sin(d * 0.11 * (1 - k * 0.6) - t * 0.0016) * (0.5 + k * 5)
+              + Math.sin(d * 0.027 + t * 0.0007) * k * 4 + wind * k * 3;
+      for (const r of ripples) {                 // rings shiver the reflection where they pass
+        const dy = y - r.y, ry = r.r * 0.3;
+        if (Math.abs(dy) < ry + 6) off += Math.sin(dy * 0.5 - r.r * 0.2) * 3 * r.life * r.sc;
+      }
+      ctx.globalAlpha = 0.6 * (1 - k * 0.55);
+      ctx.drawImage(up, 0, sy * DPR, W * DPR, 2 * DPR, off - 10, y, W + 20, 2);
+    }
+    ctx.globalAlpha = 1;
+
+    // a sheen along the waterline, and a darker near shore
+    const sheen = ctx.createLinearGradient(0, HY - 1, 0, HY + 10);
+    sheen.addColorStop(0, 'rgba(170, 180, 255, .16)'); sheen.addColorStop(1, 'rgba(170, 180, 255, 0)');
+    ctx.fillStyle = sheen; ctx.fillRect(0, HY - 1, W, 11);
+    const near = ctx.createLinearGradient(0, HY + WH * 0.5, 0, H);
+    near.addColorStop(0, 'rgba(3, 4, 11, 0)'); near.addColorStop(1, 'rgba(3, 4, 11, .55)');
+    ctx.fillStyle = near; ctx.fillRect(0, HY + WH * 0.5, W, WH * 0.5);
+  }
+
+  // pale koi drifting just under the surface, curious about lanterns and your cursor
+  function drawFish(t) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of fish) {
+      let tx = null, ty = null;
+      const lure = lanterns.find(l => Math.hypot(l.x - f.x, l.y - f.y) < 260);
+      if (mouse.active && mouse.y > HY && Math.hypot(mouse.x - f.x, mouse.y - f.y) < 320) { tx = mouse.x; ty = mouse.y; }
+      else if (lure) { tx = lure.x; ty = lure.y + 10; }
+      if (f.y < HY + (H - HY) * 0.12) { tx = f.x; ty = H; }
+      if (f.y > H - 20) { tx = f.x; ty = HY; }
+      if (f.x < 40) { tx = W; ty = f.y; } else if (f.x > W - 40) { tx = 0; ty = f.y; }
+      if (tx !== null) {
+        const want = Math.atan2((ty - f.y) / 0.35, tx - f.x);
+        let da = ((want - f.a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+        f.a += clamp(da, -0.02, 0.02);
+      } else f.a += rand(-0.025, 0.025);
+      const sc = scaleAt(f.y), close = tx !== null && Math.hypot(tx - f.x, ty - f.y) < 50;
+      const sp = f.sp * (close ? 0.3 : 1);
+      f.x += Math.cos(f.a) * sp * sc;
+      f.y += Math.sin(f.a) * sp * sc * 0.35;
+      if (Math.random() < 0.0015) addRipple(f.x + Math.cos(f.a) * f.len * 0.5 * sc, f.y, 40, 0);   // a kiss at the surface
+
+      const L = f.len * sc, sway = Math.sin(t * 0.006 + f.ph) * 0.35;
+      const col = f.white ? '220, 228, 255' : `${255}, ${150 + f.hue * 1.5}, ${110 + f.hue}`;
+      ctx.save();
+      ctx.translate(f.x, f.y);
+      ctx.scale(1, 0.42);
+      ctx.rotate(f.a);
+      const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, L);
+      glow.addColorStop(0, `rgba(${col}, .10)`); glow.addColorStop(1, `rgba(${col}, 0)`);
+      ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, L, 0, 6.29); ctx.fill();
+      ctx.fillStyle = `rgba(${col}, .28)`;
+      ctx.beginPath();                                     // body
+      ctx.moveTo(L * 0.5, 0);
+      ctx.bezierCurveTo(L * 0.4, -L * 0.17, -L * 0.15, -L * 0.15, -L * 0.35, Math.sin(sway) * L * 0.06);
+      ctx.bezierCurveTo(-L * 0.15, L * 0.15, L * 0.4, L * 0.17, L * 0.5, 0);
+      ctx.fill();
+      ctx.translate(-L * 0.33, 0); ctx.rotate(sway);        // tail
+      ctx.fillStyle = `rgba(${col}, .2)`;
+      ctx.beginPath(); ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(-L * 0.2, -L * 0.2, -L * 0.32, -L * 0.16);
+      ctx.quadraticCurveTo(-L * 0.2, 0, -L * 0.32, L * 0.16);
+      ctx.quadraticCurveTo(-L * 0.2, L * 0.2, 0, 0);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function addRipple(x, y, max, delay) {
+    ripples.push({ x, y, r: 0, max: max * scaleAt(y), sc: scaleAt(y), life: 1, wait: delay });
+  }
+  function drawRipples() {
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i];
+      if (r.wait > 0) { r.wait--; continue; }
+      r.r += 0.55 * r.sc; r.life = 1 - r.r / r.max;
+      if (r.life <= 0) { ripples.splice(i, 1); continue; }
+      ctx.strokeStyle = `rgba(200, 210, 255, ${0.32 * r.life})`;
+      ctx.beginPath(); ctx.ellipse(r.x, r.y, r.r, r.r * 0.3, 0, 0, 6.29); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ---------- lanterns ----------
+  function floatLantern(x, y, t) {
+    const hue = HUES[Math.floor(Math.random() * HUES.length)] + rand(-10, 10);
+    lanterns.push({ x, y, vx: rand(-0.06, 0.06), vy: -rand(0.025, 0.05), hue, born: t, ph: rand(0, 6.28) });
+    if (lanterns.length > 40) lanterns.shift();
+    addRipple(x, y, 120, 0); addRipple(x, y, 90, 14); addRipple(x, y, 60, 30);
+    plip(x / W, hue);
+  }
+
+  function drawLanterns(t) {
+    lanterns.sort((a, b) => a.y - b.y);                     // far ones first
+    for (let i = lanterns.length - 1; i >= 0; i--) {
+      const l = lanterns[i];
+      l.x += l.vx + wind * 0.15; l.y += l.vy * scaleAt(l.y);
+      if (l.y < HY + 3 || l.x < -60 || l.x > W + 60) lanterns.splice(i, 1);
+    }
+    for (const l of lanterns) {
+      const sc = scaleAt(l.y), age = clamp((t - l.born) / 1400, 0, 1), open = easeOut(age);
+      const fade = clamp((l.y - HY - 3) / 30, 0, 1);
+      const flick = 0.85 + 0.1 * Math.sin(t * 0.013 + l.ph) + 0.05 * Math.sin(t * 0.031 + l.ph * 2);
+      const bob = Math.sin(t * 0.0018 + l.ph) * 1.2 * sc;
+      const x = l.x, y = l.y + bob;
+
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.globalCompositeOperation = 'lighter';
+      // long wavering reflection
+      const rh = 70 * sc, rg = ctx.createLinearGradient(0, y, 0, y + rh);
+      rg.addColorStop(0, `hsla(${l.hue}, 90%, 70%, ${0.32 * flick})`);
+      rg.addColorStop(1, `hsla(${l.hue}, 90%, 60%, 0)`);
+      ctx.fillStyle = rg;
+      for (let k = 0; k < rh; k += 3) {
+        const w = (9 - k / rh * 5) * sc, dx = Math.sin(k * 0.25 - t * 0.004 + l.ph) * 2.5 * sc;
+        ctx.fillRect(x - w / 2 + dx, y + k, w, 2);
+      }
+      // halo
+      const hr = 55 * sc, hg = ctx.createRadialGradient(x, y - 6 * sc, 0, x, y - 6 * sc, hr);
+      hg.addColorStop(0, `hsla(${l.hue}, 90%, 65%, ${0.35 * flick * open})`);
+      hg.addColorStop(1, `hsla(${l.hue}, 90%, 50%, 0)`);
+      ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(x, y - 6 * sc, hr, 0, 6.29); ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalAlpha = fade;
+      ctx.translate(x, y); ctx.scale(sc, sc);
+      ctx.fillStyle = 'rgba(20, 40, 38, .95)';            // lily pad
+      ctx.beginPath(); ctx.ellipse(0, 1, 24, 6, 0, 0.25, 6.0); ctx.lineTo(0, 1); ctx.fill();
+      const petal = (ang, len, wid, light) => {
+        ctx.save(); ctx.rotate(ang * open);
+        const pg = ctx.createLinearGradient(0, 0, 0, -len);
+        pg.addColorStop(0, `hsla(${l.hue + 15}, 80%, ${45 + light}%, .95)`);
+        pg.addColorStop(1, `hsla(${l.hue}, 85%, ${72 + light}%, .95)`);
+        ctx.fillStyle = pg;
+        ctx.beginPath(); ctx.moveTo(0, 0);
+        ctx.bezierCurveTo(-wid, -len * 0.35, -wid * 0.6, -len * 0.85, 0, -len);
+        ctx.bezierCurveTo(wid * 0.6, -len * 0.85, wid, -len * 0.35, 0, 0);
+        ctx.fill(); ctx.restore();
+      };
+      [-1.15, -0.6, 0.6, 1.15].forEach(a => petal(a, 16, 7, 0));
+      petal(0, 18, 7, 2);
+      // the candle
+      ctx.globalCompositeOperation = 'lighter';
+      const fy = -9 - flick * 1.5;
+      const fg = ctx.createRadialGradient(0, fy, 0, 0, fy, 9);
+      fg.addColorStop(0, `rgba(255, 240, 200, ${0.9 * open})`); fg.addColorStop(1, 'rgba(255, 190, 120, 0)');
+      ctx.fillStyle = fg; ctx.beginPath(); ctx.arc(0, fy, 9, 0, 6.29); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      [-0.4, 0.4].forEach(a => petal(a, 12, 6, 8));
+      [-0.95, 0.95].forEach(a => petal(a * 0.8, 10, 5, 12));
+      ctx.restore();
+    }
+  }
+
+  // ---------- reeds, fireflies ----------
+  function drawReeds(t) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const r of reeds) {
+      let target = wind * 0.05;
+      if (mouse.active) {
+        const tipX = r.x + Math.sin(r.lean + r.bend) * r.h, tipY = H - r.h * 0.8;
+        const dx = tipX - mouse.x, d = Math.hypot(dx, tipY - mouse.y);
+        if (d < 150) target += Math.sign(dx || 1) * (1 - d / 150) * 0.5 + mouse.vx * 0.01 * (1 - d / 150);
+      }
+      r.bv += (clamp(target, -0.8, 0.8) - r.bend) * 0.06; r.bv *= 0.9; r.bend += r.bv;
+      const a = r.lean + r.bend + Math.sin(t * 0.0008 + r.ph) * 0.03;
+      const x0 = r.x, y0 = H + 4, tx = x0 + Math.sin(a) * r.h, ty = y0 - Math.cos(a) * r.h;
+      const cx = x0 + Math.sin(a * 0.3) * r.h * 0.5, cy = y0 - r.h * 0.5;
+      ctx.strokeStyle = '#05050f'; ctx.lineWidth = r.tail ? 2.6 : 2;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(cx, cy, tx, ty); ctx.stroke();
+      if (r.tail) {
+        ctx.save(); ctx.translate(x0 + (tx - x0) * 0.86, y0 + (ty - y0) * 0.86); ctx.rotate(a * 0.9);
+        ctx.fillStyle = '#05050f'; ctx.beginPath(); ctx.ellipse(0, 0, 3.4, 12, 0, 0, 6.29); ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawFireflies(t) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of fireflies) {
+      f.vx += rand(-.03, .03) + (mouse.active ? (mouse.x - f.x) * 0.000004 : 0);
+      f.vy += rand(-.02, .02); f.vh += rand(-.04, .04);
+      f.vx = clamp(f.vx, -.5, .5); f.vy = clamp(f.vy, -.25, .25); f.vh = clamp(f.vh, -.3, .3);
+      f.x += f.vx + wind * 0.3; f.wy += f.vy; f.h += f.vh;
+      if (f.x < -20) f.x = W + 20; if (f.x > W + 20) f.x = -20;
+      if (f.wy < HY + 6) f.vy += 0.02; if (f.wy > H) f.vy -= 0.02;
+      if (f.h < 8) f.vh += 0.05; if (f.h > 110) f.vh -= 0.05;
+      const a = Math.max(0, Math.sin(t * f.sp + f.ph));
+      if (a < 0.02) continue;
+      const sc = scaleAt(f.wy), sy = f.wy - f.h * sc, ry = f.wy + f.h * sc;
+      const glowAt = (x, y, r, k) => {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, `hsla(${f.hue}, 100%, 75%, ${k * a})`);
+        g.addColorStop(1, `hsla(${f.hue}, 100%, 50%, 0)`);
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.29); ctx.fill();
+      };
+      glowAt(f.x, sy, 9 * a * (0.6 + sc * 0.5), 0.9);
+      if (ry < H) glowAt(f.x + Math.sin(t * 0.004 + f.ph) * 1.5, ry, 7 * a * (0.6 + sc * 0.5), 0.3);
+    }
+    ctx.restore();
+  }
+
+  // ---------- breathing guide (4 in · 4 hold · 6 out), a ring on the water ----------
+  let breathing = false, breathStart = 0;
+  function drawBreath(t) {
+    if (!breathing) return;
+    const k = (t - breathStart) % 14000;
+    let r01, label;
+    if (k < 4000) { r01 = easeInOut(k / 4000); label = 'breathe in'; }
+    else if (k < 8000) { r01 = 1; label = 'hold'; }
+    else { r01 = 1 - easeInOut((k - 8000) / 6000); label = 'breathe out'; }
+    if (breathEl.textContent !== label) breathEl.textContent = label;
+    const cx = W / 2, cy = HY + (H - HY) * 0.42, R = 30 + r01 * Math.min(W * 0.32, 420);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) {
+      ctx.strokeStyle = `rgba(190, 200, 255, ${0.28 - i * 0.08})`; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.ellipse(cx, cy, R * (1 - i * 0.12), R * (1 - i * 0.12) * 0.28, 0, 0, 6.29); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ---------- sound (synthesized live, plus the pond's own track on M) ----------
+  let audio = null, soundOn = false, musicOn = true;
+  const PENTA = [0, 2, 4, 7, 9, 12, 14, 16];               // D major pentatonic, same key as the track
+
+  function initAudio() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    const ac = new AC();
+    const master = ac.createGain(); master.gain.value = 0; master.connect(ac.destination);
+    const pan = (node, p) => {
+      if (!ac.createStereoPanner) return node;
+      const sp = ac.createStereoPanner(); sp.pan.value = p; node.connect(sp); return sp;
+    };
+    const delay = ac.createDelay(); delay.delayTime.value = 0.42;
+    const fb = ac.createGain(); fb.gain.value = 0.45;
+    const wet = ac.createGain(); wet.gain.value = 0.5;
+    delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
+
+    const nb = ac.createBuffer(1, ac.sampleRate * 3, ac.sampleRate);
+    const d = nb.getChannelData(0); let b = 0;
+    for (let i = 0; i < d.length; i++) { b = 0.97 * b + 0.03 * (Math.random() * 2 - 1); d[i] = (Math.random() * 2 - 1) * 0.5 + b * 4; }
+
+    // water lapping at the bank: low noise that rises and falls
+    const lap = ac.createBufferSource(); lap.buffer = nb; lap.loop = true; lap.start();
+    const lapLp = ac.createBiquadFilter(); lapLp.type = 'lowpass'; lapLp.frequency.value = 420;
+    const lapGain = ac.createGain(); lapGain.gain.value = 0.02;
+    const lfo = ac.createOscillator(); lfo.frequency.value = 0.17;
+    const lfoAmt = ac.createGain(); lfoAmt.gain.value = 0.014; lfo.connect(lfoAmt); lfoAmt.connect(lapGain.gain); lfo.start();
+    lap.connect(lapLp); lapLp.connect(lapGain); lapGain.connect(master);
+
+    // a far-off cricket or two
+    const crickets = [-0.6, 0.55].map(p => {
+      const o = ac.createOscillator(); o.frequency.value = rand(4200, 5000);
+      const g = ac.createGain(); g.gain.value = 0;
+      o.connect(g); pan(g, p).connect(master); o.start();
+      return { g, next: ac.currentTime + rand(0.5, 3), period: rand(0.7, 1.2), amp: rand(0.008, 0.016) };
+    });
+    return { ac, master, delay, pan, crickets, nextFrog: ac.currentTime + rand(4, 10) };
+  }
+
+  function scheduleNature() {
+    if (!audio || !soundOn) return;
+    const { ac, crickets } = audio, now = ac.currentTime, ahead = now + 0.4;
+    for (const c of crickets) {
+      while (c.next < ahead) {
+        if (Math.random() < 0.06) { c.next += rand(3, 8); continue; }
+        for (let k = 0; k < 3; k++) {
+          const t0 = c.next + k * 0.045;
+          c.g.gain.setValueAtTime(0, t0);
+          c.g.gain.linearRampToValueAtTime(c.amp, t0 + 0.005);
+          c.g.gain.linearRampToValueAtTime(0, t0 + 0.024);
+        }
+        c.next += c.period * rand(0.92, 1.08);
+      }
+    }
+    if (audio.nextFrog < ahead) { frog(audio.nextFrog); audio.nextFrog += rand(5, 16); }
+  }
+  setInterval(scheduleNature, 120);
+
+  // a frog somewhere along the bank: a few soft, throaty pulses
+  function frog(t0) {
+    const { ac, master, pan } = audio;
+    const f = rand(95, 170), n = 2 + Math.floor(rand(0, 4));
+    const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f * 4; bp.Q.value = 2.5;
+    const out = ac.createGain(); out.gain.value = 0.05;
+    bp.connect(out); pan(out, rand(-0.9, 0.9)).connect(master);
+    for (let i = 0; i < n; i++) {
+      const t = t0 + i * rand(0.13, 0.18), o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(f * 1.06, t); o.frequency.exponentialRampToValueAtTime(f * 0.92, t + 0.09);
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(1, t + 0.015); g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+      o.connect(g); g.connect(bp); o.start(t); o.stop(t + 0.12);
+    }
+  }
+
+  function note(freq, type, peak, len, panP = 0) {
+    const { ac, master, delay, pan } = audio, now = ac.currentTime;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(peak, now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + len);
+    o.connect(g); const out = pan(g, panP); out.connect(master); out.connect(delay);
+    o.start(now); o.stop(now + len + 0.05);
+    return o;
+  }
+
+  // a lantern touching the water: a little "plip", then a note in key
+  function plip(xf, hue) {
+    if (!soundOn || !audio) return;
+    const p = note(1300, 'sine', 0.08, 0.18, xf * 2 - 1);
+    p.frequency.exponentialRampToValueAtTime(320, audio.ac.currentTime + 0.12);
+    const n = PENTA[Math.floor(((hue % 360) / 360) * PENTA.length) % PENTA.length];
+    setTimeout(() => soundOn && note(293.66 * Math.pow(2, n / 12), 'triangle', 0.1, 2.6, xf * 2 - 1), 90);
+  }
+  function starChime(xf) {
+    if (!soundOn || !audio) return;
+    const n = PENTA[Math.floor(rand(3, PENTA.length))];
+    note(587.33 * Math.pow(2, n / 12), 'sine', 0.06, 3.2, xf * 2 - 1);
+    setTimeout(() => soundOn && note(1174.66 * Math.pow(2, n / 12), 'sine', 0.03, 2.4, xf * 2 - 1), 160);
+  }
+
+  const SCALE5 = [0, 2, 4, 7, 9];
+  function bell(f, xf) {
+    if (!soundOn || !audio) return;
+    note(f, 'sine', 0.07, 3.2, xf * 2 - 1);
+    note(f * 2.01, 'sine', 0.017, 1.6, xf * 2 - 1);
+  }
+  function starFreq(i) {
+    const k = clamp(1 - pos[i * 2 + 1] / HY, 0, 0.999), n = Math.floor(k * 12);
+    return 293.66 * Math.pow(2, (SCALE5[n % 5] + 12 * Math.floor(n / 5)) / 12);
+  }
+  function starNote(i) { bell(starFreq(i), pos[i * 2] / W); }
+  function arpeggio(k) { k.idx.forEach((i, j) => setTimeout(() => bell(starFreq(i), pos[i * 2] / W), 50 + j * 160)); }
+
+  const track = document.getElementById('track');
+  const TRACK_VOL = 0.6;
+  track.volume = 0;
+  let fadeRaf = 0;
+  function fadeTrack(on) {
+    cancelAnimationFrame(fadeRaf);
+    if (on) {
+      const p = track.play();
+      if (p && p.catch) p.catch(() => toast('Couldn’t find music/moon_pond.mp3', 3000));
+    }
+    const from = track.volume, to = on ? TRACK_VOL : 0, start = performance.now(), dur = on ? 2500 : 1500;
+    const step = now => {
+      const k = clamp((now - start) / dur, 0, 1);
+      track.volume = from + (to - from) * k;
+      if (k < 1) fadeRaf = requestAnimationFrame(step);
+      else if (!on) track.pause();
+    };
+    fadeRaf = requestAnimationFrame(step);
+  }
+
+  function toggleSound() {
+    if (!audio) audio = initAudio();
+    if (!audio) { toast('No audio support in this browser'); return; }
+    audio.ac.resume();
+    soundOn = !soundOn;
+    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, audio.ac.currentTime, 0.6);
+    fadeTrack(soundOn && musicOn);
+    toast(soundOn ? 'sound on' : 'sound off');
+  }
+  function toggleMusic() {
+    if (!soundOn) { musicOn = true; return toggleSound(); }
+    musicOn = !musicOn; fadeTrack(musicOn);
+    toast(musicOn ? 'music on' : 'music off');
+  }
+
+  // ---------- wishes ----------
+  const WISHES = [
+    'The water holds the sky for you for a while.',
+    'That light left those stars long before tonight. It still got here.',
+    'Still water isn’t empty. It’s resting.',
+    'Every constellation started as someone awake at night, connecting dots.',
+    'You can set something down here. It will float.',
+    'The sky turns whether or not you watch it. You can let it.',
+    'Slow is a speed.',
+    'Somewhere a long way off, it’s already morning.',
+    'Ripples go out, and then the water is still again.',
+    'Look how much dark there is, and it still can’t put the stars out.',
+    'The garden is still glowing down there. It kept going without you watching.',
+    'The fish aren’t in a hurry. You don’t have to be either.'
+  ];
+  let wishIdx = Math.floor(Math.random() * WISHES.length);
+  function wish(t) {
+    launchShootingStar(t);
+    wishIdx = (wishIdx + 1) % WISHES.length;
+    toast(WISHES[wishIdx], 6500);
+  }
+
+  // ---------- ui ----------
+  let toastTimer = 0;
+  function toast(msg, ms = 1600) {
+    toastEl.textContent = msg; toastEl.style.opacity = 1;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.style.opacity = 0, ms);
+  }
+
+  const mouse = { x: -999, y: -999, px: 0, vx: 0, active: false, touch: false };
+  let wind = 0, lastT = 0;
+  window.addEventListener('pointermove', e => {
+    const dx = mouse.active ? e.clientX - mouse.px : 0;
+    mouse.active = true; mouse.touch = e.pointerType === 'touch';
+    mouse.vx = mouse.vx * 0.5 + dx * 0.5;
+    wind = clamp(wind + clamp(dx * 0.005, -0.4, 0.4), -3, 3);
+    mouse.px = mouse.x = e.clientX; mouse.y = e.clientY;
+  });
+  document.addEventListener('pointerleave', () => { mouse.active = false; });
+  window.addEventListener('blur', () => { mouse.active = false; });
+  cv.addEventListener('pointerdown', e => {
+    const x = e.clientX, y = e.clientY;
+    mouse.active = true; mouse.touch = e.pointerType === 'touch'; mouse.px = mouse.x = x; mouse.y = y;
+    if (renaming) return endRename();
+    if (y > HY + 4) floatLantern(x, y, lastT);
+    else if (y < bankY(x) - 6) {
+      const i = starAt(x, y, mouse.touch);
+      if (i >= 0) addStar(i);
+      else if (cur) toast('click the last star again to finish', 2200);
+      else {
+        const k = constAt(x, y);
+        if (k) { shownName = { k, until: lastT + 4000 }; lastMade = k; arpeggio(k); }
+      }
+    }
+    if (hud.style.opacity !== '0') setTimeout(() => hud.style.opacity = 0.35, 400);
+  });
+  window.addEventListener('keydown', e => {
+    if (renaming) return;
+    const k = e.key.toLowerCase();
+    if (k === 's') toggleSound();
+    else if (k === 'm') toggleMusic();
+    else if (k === 'w') wish(lastT);
+    else if (k === 'b') { breathing = !breathing; breathStart = lastT; breathEl.style.opacity = breathing ? 1 : 0; }
+    else if (k === 'escape') { if (cur) { cur = null; toast('let go'); } }
+    else if (k === 'enter') finish();
+    else if (k === 'backspace') { e.preventDefault(); undo(); }
+    else if (k === 'r') { e.preventDefault(); startRename(hovered || (shownName && lastT < shownName.until && shownName.k) || lastMade); }
+    else if (k === 'c') {
+      if (cur) { cur = null; return; }
+      if (!consts.length) return;
+      if (lastT < clearArmed) { consts = []; saveConsts(); clearArmed = 0; toast('the sky is just stars again'); }
+      else { clearArmed = lastT + 3000; toast('press C again to let your constellations go (from the hilltop too)', 3500); }
+    }
+    else if (k === 'h') hud.style.opacity = hud.style.opacity === '0' ? 1 : 0;
+  });
+  window.addEventListener('resize', resize);
+
+  // ---------- loop ----------
+  function frame(t) {
+    lastT = t;
+    requestAnimationFrame(frame);
+    if (!W || !HY) return;                                 // minimised or hidden: nothing to draw yet
+    wind *= 0.965; mouse.vx *= 0.85;
+    drawUpper(t);
+    updateHover();
+    ctx.drawImage(up, 0, 0, W, HY);
+    drawWater(t);
+    drawFish(t);
+    drawRipples();
+    drawBreath(t);
+    drawLanterns(t);
+    drawFireflies(t);
+    drawReeds(t);
+    drawOverlay(t);
+  }
+
+  resize();
+  // two lanterns are already drifting when you arrive
+  setTimeout(() => [0.35, 0.62].forEach((p, i) => setTimeout(() => floatLantern(W * p + rand(-40, 40), HY + (H - HY) * rand(0.45, 0.7), lastT), i * 900)), 700);
+  if (consts.length) setTimeout(() => toast(consts.length === 1 ? `${consts[0].name} is in the water too.` : 'Your constellations are up there, and down in the water.', 4500), 2500);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

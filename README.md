@@ -2,12 +2,12 @@
 
 A small, quiet, interactive night scene that runs in your browser. Plant glowing flowers on a hillside under the stars, bring up the dawn when you're ready, brush through them with your cursor, watch the fireflies drift, and turn on a night soundscape of crickets, cicadas, a distant owl and the wind.
 
-It's one HTML file plus a music track, with no dependencies, no install, no build step, and no internet needed. Keep the `music` folder next to `index.html`.
+It's one HTML file plus a music track, with no dependencies, no install, no build step, and no internet needed. Keep the `music` folder next to the HTML files.
 
 ## How to run
 
 - Double-click **`Open Night Garden.bat`**, or
-- Double-click **`index.html`** (or drag it into any browser).
+- Double-click **`index.html`** (or drag it into any browser) to open the index of scenes, then pick one. The garden itself is `garden.html`.
 
 Press **F11** for fullscreen. It looks best that way.
 

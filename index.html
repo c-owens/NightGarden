@@ -5,878 +5,211 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Night Garden</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #05060f; overflow: hidden; }
-  canvas { display: block; cursor: crosshair; }
-  #hud {
-    position: fixed; left: 50%; top: 28px; transform: translateX(-50%);
-    font: 300 15px/1.6 Georgia, "Times New Roman", serif; letter-spacing: .04em;
-    color: rgba(220, 225, 255, .78); text-align: center; pointer-events: none;
-    transition: opacity 1.6s ease; text-shadow: 0 0 12px rgba(120,140,255,.4);
+  :root {
+    --bg: #05060f;
+    --ink: rgba(220, 225, 255, .82);
+    --ink-dim: rgba(200, 208, 245, .55);
+    --ink-bright: #fff;
+    --card: rgba(18, 22, 48, .55);
+    --card-edge: rgba(150, 165, 255, .14);
+    --glow: rgba(120, 140, 255, .4);
   }
-  #hud b { font-weight: 400; color: #fff; }
-  #hud small { display: block; margin-top: 6px; font-size: 12px; opacity: .65; letter-spacing: .08em; }
-  #breath {
-    position: fixed; left: 50%; top: 42%; transform: translate(-50%, -50%);
-    font: 300 18px Georgia, serif; letter-spacing: .2em; color: rgba(230,235,255,.85);
-    pointer-events: none; opacity: 0; transition: opacity 1s ease; text-transform: lowercase;
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+  body { font: 300 16px/1.6 Georgia, "Times New Roman", serif; letter-spacing: .03em; }
+  #sky { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; }
+  main { position: relative; z-index: 1; max-width: 980px; margin: 0 auto; padding: 72px 16px 56px; }
+  header { text-align: center; margin-bottom: 48px; }
+  h1 {
+    margin: 0; font-weight: 400; font-size: clamp(34px, 7vw, 56px); letter-spacing: .08em;
+    color: var(--ink-bright); text-shadow: 0 0 24px var(--glow);
   }
-  body.day #hud, body.day #toast, body.day #breath { color: rgba(25, 35, 70, .8); text-shadow: 0 0 10px rgba(255,255,255,.6); }
-  body.day #hud b { color: #14203f; }
-  #toast {
-    position: fixed; right: 20px; bottom: 18px; font: 13px Georgia, serif;
-    color: rgba(220,225,255,.7); opacity: 0; transition: opacity .6s ease; pointer-events: none;
+  header p { margin: 10px auto 0; max-width: 34em; color: var(--ink-dim); font-size: 15px; }
+
+  .scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+  a.scene {
+    display: flex; flex-direction: column; text-decoration: none; color: inherit;
+    background: var(--card); border: 1px solid var(--card-edge); border-radius: 14px; overflow: hidden;
+    backdrop-filter: blur(3px);
+    transition: transform .5s ease, border-color .5s ease, box-shadow .5s ease;
   }
-  #pond {
-    position: fixed; left: 18px; bottom: 16px; font: 12px Georgia, serif; letter-spacing: .08em;
-    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease;
+  a.scene:hover, a.scene:focus-visible {
+    transform: translateY(-3px); border-color: rgba(170, 185, 255, .35);
+    box-shadow: 0 10px 40px rgba(60, 80, 200, .18); outline: none;
   }
-  #pond:hover, #hill:hover { color: rgba(220,228,255,.85); }
-  #hill { position: fixed; left: 18px; bottom: 36px; font: 12px Georgia, serif; letter-spacing: .08em;
-    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease; }
-  #highpond { position: fixed; left: 18px; bottom: 56px; font: 12px Georgia, serif; letter-spacing: .08em;
-    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease; }
-  #highpond:hover { color: rgba(220,228,255,.85); }
-  body.day #hill, body.day #highpond { color: rgba(25,35,70,.45); }
-  body.day #hill:hover { color: rgba(25,35,70,.85); }
-  body.day #pond { color: rgba(25,35,70,.45); }
-  body.day #pond:hover { color: rgba(25,35,70,.85); }
+  a.scene svg { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; }
+  .text { padding: 16px 18px 18px; }
+  .text h2 { margin: 0 0 4px; font-weight: 400; font-size: 20px; color: var(--ink-bright); letter-spacing: .05em; }
+  .text p { margin: 0; font-size: 14px; color: var(--ink-dim); }
+  .text .file { display: block; margin-top: 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .5; }
+
+  footer { margin-top: 48px; text-align: center; font-size: 13px; color: var(--ink-dim); opacity: .7; }
+  kbd { font: inherit; padding: 0 5px; border: 1px solid var(--card-edge); border-radius: 4px; }
+
+  @media (prefers-reduced-motion: reduce) { a.scene { transition: none; } }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="hud">
-  Click anywhere to plant a flower.
-  <small><b>S</b> sound &nbsp;·&nbsp; <b>M</b> music &nbsp;·&nbsp; <b>N</b> nature &nbsp;·&nbsp; <b>D</b> dawn &nbsp;·&nbsp; <b>B</b> breathe &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>H</b> hide this</small>
-</div>
-<div id="breath"></div>
-<div id="toast"></div>
-<a id="highpond" href="high-pond.html">to the high pond &uarr;</a>
-<a id="hill" href="hill.html">up the hill &uarr;</a>
-<a id="pond" href="pond.html">down to the pond &rarr;</a>
-<audio id="track" src="music/night_garden.mp3" loop preload="auto"></audio>
+<canvas id="sky" aria-hidden="true"></canvas>
+<main>
+  <header>
+    <h1>Night Garden</h1>
+    <p>A few quiet places under the same night sky. Pick one and stay as long as you like.</p>
+  </header>
+
+  <nav class="scenes">
+    <a class="scene" href="garden.html">
+      <svg viewBox="0 0 320 180" aria-hidden="true">
+        <defs>
+          <linearGradient id="g-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#070a1f"/><stop offset="1" stop-color="#16183a"/></linearGradient>
+          <radialGradient id="g-bloom"><stop offset="0" stop-color="#ffd2f0"/><stop offset=".4" stop-color="#e46bd0" stop-opacity=".7"/><stop offset="1" stop-color="#e46bd0" stop-opacity="0"/></radialGradient>
+          <radialGradient id="g-bloom2"><stop offset="0" stop-color="#d8ecff"/><stop offset=".4" stop-color="#6ab0ff" stop-opacity=".7"/><stop offset="1" stop-color="#6ab0ff" stop-opacity="0"/></radialGradient>
+        </defs>
+        <rect width="320" height="180" fill="url(#g-sky)"/>
+        <path d="M0 128 Q90 96 180 112 T320 104 V180 H0Z" fill="#0b1226"/>
+        <g stroke="#2b5a4a" stroke-width="1.4" fill="none">
+          <path d="M70 160 Q66 140 72 122"/><path d="M120 165 Q126 142 118 118"/><path d="M180 162 Q176 140 184 126"/><path d="M240 158 Q246 136 238 116"/>
+        </g>
+        <circle cx="72" cy="120" r="14" fill="url(#g-bloom)"/><circle cx="118" cy="116" r="12" fill="url(#g-bloom2)"/>
+        <circle cx="184" cy="124" r="13" fill="url(#g-bloom)"/><circle cx="238" cy="114" r="15" fill="url(#g-bloom2)"/>
+        <g fill="#f6f0a0"><circle cx="150" cy="90" r="1.4" opacity=".9"/><circle cx="210" cy="80" r="1.2" opacity=".7"/><circle cx="96" cy="84" r="1.1" opacity=".8"/></g>
+      </svg>
+      <div class="text">
+        <h2>The Garden</h2>
+        <p>Plant glowing flowers on a hillside, brush through them, and bring up the dawn when you're ready.</p>
+        <span class="file">garden.html</span>
+      </div>
+    </a>
+
+    <a class="scene" href="pond.html">
+      <svg viewBox="0 0 320 180" aria-hidden="true">
+        <defs>
+          <linearGradient id="p-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#070a1f"/><stop offset="1" stop-color="#1a1d44"/></linearGradient>
+          <linearGradient id="p-water" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#141a3c"/><stop offset="1" stop-color="#060814"/></linearGradient>
+          <radialGradient id="p-lantern"><stop offset="0" stop-color="#ffe6a8"/><stop offset=".35" stop-color="#ffaa44" stop-opacity=".6"/><stop offset="1" stop-color="#ffaa44" stop-opacity="0"/></radialGradient>
+        </defs>
+        <rect width="320" height="180" fill="url(#p-sky)"/>
+        <circle cx="236" cy="42" r="14" fill="#f2f0dc" opacity=".92"/>
+        <path d="M0 92 Q40 82 80 90 T170 86 T320 90 V96 H0Z" fill="#0a0f22"/>
+        <rect y="95" width="320" height="85" fill="url(#p-water)"/>
+        <ellipse cx="236" cy="124" rx="10" ry="22" fill="#f2f0dc" opacity=".14"/>
+        <circle cx="96" cy="132" r="16" fill="url(#p-lantern)"/><circle cx="160" cy="150" r="12" fill="url(#p-lantern)"/>
+        <path d="M200 140 q10 -6 20 0" stroke="#ff8a4a" stroke-width="3" fill="none" stroke-linecap="round" opacity=".7"/>
+        <g stroke="rgba(200,210,255,.18)" fill="none"><ellipse cx="96" cy="134" rx="22" ry="4"/><ellipse cx="160" cy="152" rx="18" ry="3"/></g>
+      </svg>
+      <div class="text">
+        <h2>The Pond</h2>
+        <p>A moonlit pond across from the garden. Float lanterns on the water, hang stars in the sky, and the koi come to see.</p>
+        <span class="file">pond.html</span>
+      </div>
+    </a>
+
+    <a class="scene" href="hill.html">
+      <svg viewBox="0 0 320 180" aria-hidden="true">
+        <defs>
+          <linearGradient id="h-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#03040c"/><stop offset="1" stop-color="#121634"/></linearGradient>
+          <linearGradient id="h-mw" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9aa6ff" stop-opacity="0"/><stop offset=".5" stop-color="#b8c0ff" stop-opacity=".18"/><stop offset="1" stop-color="#9aa6ff" stop-opacity="0"/></linearGradient>
+        </defs>
+        <rect width="320" height="180" fill="url(#h-sky)"/>
+        <path d="M-20 40 Q160 60 340 150 L340 110 Q160 20 -20 0Z" fill="url(#h-mw)"/>
+        <g stroke="rgba(190,205,255,.55)" stroke-width=".9" fill="none"><path d="M62 52 L98 38 L132 58 L120 86"/></g>
+        <g fill="#fff"><circle cx="62" cy="52" r="2"/><circle cx="98" cy="38" r="2.2"/><circle cx="132" cy="58" r="1.8"/><circle cx="120" cy="86" r="2"/></g>
+        <path d="M0 150 Q120 128 240 140 T320 136 V180 H0Z" fill="#070a14"/>
+        <path d="M262 140 V116 M262 124 l-10 -8 M262 120 l9 -9" stroke="#070a14" stroke-width="3" fill="none"/>
+        <circle cx="262" cy="108" r="12" fill="#070a14"/>
+        <g fill="#ffb8e6" opacity=".6"><circle cx="120" cy="160" r="1.4"/><circle cx="126" cy="162" r="1.2"/><circle cx="114" cy="163" r="1"/></g>
+      </svg>
+      <div class="text">
+        <h2>The Hilltop</h2>
+        <p>Lie on the grass under the Milky Way and join stars into constellations of your own. Each one gets a name.</p>
+        <span class="file">hill.html</span>
+      </div>
+    </a>
+
+    <a class="scene" href="high-pond.html">
+      <svg viewBox="0 0 320 180" aria-hidden="true">
+        <defs>
+          <linearGradient id="hp-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#03040c"/><stop offset="1" stop-color="#151a3c"/></linearGradient>
+          <linearGradient id="hp-water" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#10153a"/><stop offset="1" stop-color="#04050c"/></linearGradient>
+        </defs>
+        <rect width="320" height="180" fill="url(#hp-sky)"/>
+        <g stroke="rgba(190,205,255,.5)" stroke-width=".9" fill="none"><path d="M180 30 L214 44 L240 28"/></g>
+        <g fill="#fff"><circle cx="180" cy="30" r="1.8"/><circle cx="214" cy="44" r="2"/><circle cx="240" cy="28" r="1.6"/><circle cx="60" cy="40" r="1"/><circle cx="110" cy="22" r="1.2"/></g>
+        <path d="M0 96 Q90 84 160 92 T320 90 V100 H0Z" fill="#080b18"/>
+        <path d="M84 92 V66 M84 74 l-9 -7 M84 70 l8 -8" stroke="#080b18" stroke-width="3" fill="none"/>
+        <circle cx="84" cy="60" r="11" fill="#080b18"/>
+        <rect y="99" width="320" height="81" fill="url(#hp-water)"/>
+        <g stroke="rgba(190,205,255,.22)" stroke-width=".9" fill="none"><path d="M180 168 L214 154 L240 170"/></g>
+        <g fill="#fff" opacity=".35"><circle cx="180" cy="168" r="1.6"/><circle cx="214" cy="154" r="1.8"/><circle cx="240" cy="170" r="1.4"/></g>
+        <path d="M84 106 V130" stroke="#080b18" stroke-width="3" opacity=".6"/>
+        <circle cx="128" cy="128" r="10" fill="#ffc070" opacity=".35"/><circle cx="128" cy="128" r="3" fill="#ffe2a8"/>
+      </svg>
+      <div class="text">
+        <h2>The High Pond</h2>
+        <p>A still pond up on the hill, where the two meet: lanterns and koi below, the turning sky and your constellations above and reflected.</p>
+        <span class="file">high-pond.html</span>
+      </div>
+    </a>
+
+    <a class="scene" href="moon-pond.html">
+      <svg viewBox="0 0 320 180" aria-hidden="true">
+        <defs>
+          <linearGradient id="m-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#080b22"/><stop offset="1" stop-color="#1e2150"/></linearGradient>
+          <linearGradient id="m-water" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#171d44"/><stop offset="1" stop-color="#070918"/></linearGradient>
+          <radialGradient id="m-lily"><stop offset="0" stop-color="#ffe0f2"/><stop offset=".4" stop-color="#f08ad0" stop-opacity=".6"/><stop offset="1" stop-color="#f08ad0" stop-opacity="0"/></radialGradient>
+        </defs>
+        <rect width="320" height="180" fill="url(#m-sky)"/>
+        <circle cx="90" cy="46" r="18" fill="#f4f1de" opacity=".9"/>
+        <path d="M0 86 Q60 70 120 84 T320 80 V92 H0Z" fill="#0a0e24"/>
+        <rect y="91" width="320" height="89" fill="url(#m-water)"/>
+        <g fill="#1d4a3c"><ellipse cx="150" cy="128" rx="20" ry="6"/><ellipse cx="226" cy="148" rx="24" ry="7"/><ellipse cx="70" cy="156" rx="18" ry="5"/></g>
+        <circle cx="152" cy="124" r="10" fill="url(#m-lily)"/><circle cx="228" cy="143" r="12" fill="url(#m-lily)"/>
+        <g stroke="#34604e" stroke-width="1.3" fill="none"><path d="M290 92 Q288 70 294 54"/><path d="M300 92 Q302 74 298 62"/><path d="M20 92 Q22 74 16 60"/></g>
+      </svg>
+      <div class="text">
+        <h2>Moon Pond</h2>
+        <p>The first pond: water lilies, reeds and koi under a low moon, with its own little world of things to find.</p>
+        <span class="file">moon-pond.html</span>
+      </div>
+    </a>
+  </nav>
+
+  <footer>Every scene has its own help text; press <kbd>H</kbd> to hide or show it. <kbd>F11</kbd> for fullscreen.</footer>
+</main>
 
 <script>
 (() => {
-  const cv = document.getElementById('c');
-  const ctx = cv.getContext('2d');
-  const hud = document.getElementById('hud');
-  const breathEl = document.getElementById('breath');
-  const toastEl = document.getElementById('toast');
-  let W = 0, H = 0, DPR = 1;
-
-  // ---------- helpers ----------
-  const rand = (a, b) => a + Math.random() * (b - a);
-  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const easeOut = t => 1 - Math.pow(1 - t, 3);
-  const easeInOut = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
-  function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
-  function load(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch (e) { return d; } }
-
-  // ---------- dawn: 0 = deep night, 1 = full morning ----------
-  let dawn = 0, dawnTarget = 0, D = 0, greeted = false, prevT = 0;
-  const DAWN_MS = 45000;                       // a full sunrise takes 45 s
-  const KEYS = [0, 0.35, 0.65, 1];             // night · pre-dawn · sunrise · morning
-  const PAL = {
-    skyTop: ['#04050d', '#161b3f', '#3d5d93', '#6fa8dc'],
-    skyMid: ['#0b1030', '#3a2f63', '#8c80b2', '#a9cdea'],
-    skyHor: ['#1a1640', '#a0587a', '#f4a274', '#fbe3b4'],
-    skyBot: ['#0d0b22', '#3b2a4a', '#c97a63', '#e7c9a0'],
-    back:   ['#0e0c26', '#2a2348', '#4c3d5e', '#6d8fa0'],
-    front:  ['#07061a', '#141029', '#2b3436', '#3f6b47'],
-    grass:  ['#0f0e2c', '#1c1838', '#3d4a3a', '#5f9150']
-  };
-  const hexRgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
-  const PALRGB = Object.fromEntries(Object.entries(PAL).map(([k, v]) => [k, v.map(hexRgb)]));
-  function pal(name, a = 1) {
-    const c = PALRGB[name];
-    let i = 0; while (i < KEYS.length - 2 && D > KEYS[i + 1]) i++;
-    const k = clamp((D - KEYS[i]) / (KEYS[i + 1] - KEYS[i]), 0, 1);
-    const r = c[i].map((v, j) => Math.round(v + (c[i + 1][j] - v) * k));
-    return `rgba(${r[0]},${r[1]},${r[2]},${a})`;
-  }
-  const sunUp = () => clamp((D - 0.3) / 0.7, 0, 1);   // 0 below the hills .. 1 high in the sky
-
-
-  // ---------- constellations you drew up on the hill (hill.html), turning slowly with the sky ----------
-  const SKY_PERIOD = 3 * 3600 * 1000;
-  let hillConsts = load('nightgarden.constellations', []);
-  window.addEventListener('storage', e => { if (e.key === 'nightgarden.constellations') hillConsts = load(e.key, []); });
-  function drawHillConstellations(c, t, skyH, alpha) {
-    if (!hillConsts.length || alpha <= 0) return;
-    const px = W * 0.5, py = skyH * 0.26, R = Math.hypot(W * 0.5, skyH * 0.74);
-    const ang = -2 * Math.PI * ((Date.now() % SKY_PERIOD) / SKY_PERIOD);
-    c.save(); c.globalCompositeOperation = 'lighter'; c.lineCap = 'round';
-    for (const k of hillConsts) {
-      if (!k.pts || !k.edges) continue;
-      const P = k.pts.map(([r, th]) => [px + R * r * Math.cos(th + ang), py + R * r * Math.sin(th + ang)]);
-      c.strokeStyle = `rgba(185, 200, 255, ${0.16 * alpha})`; c.lineWidth = 0.8;
-      c.beginPath();
-      for (const [a, b] of k.edges) { if (P[a] && P[b]) { c.moveTo(P[a][0], P[a][1]); c.lineTo(P[b][0], P[b][1]); } }
-      c.stroke();
-      for (const [x, y] of P) {
-        c.fillStyle = `rgba(228, 234, 255, ${alpha * (0.6 + 0.25 * Math.sin(t * 0.0013 + x))})`;
-        c.beginPath(); c.arc(x, y, 1.3, 0, 6.29); c.fill();
-      }
-    }
-    c.restore();
-  }
-
-  // ---------- world ----------
-  let stars = [], fireflies = [], sparks = [], shooting = null, moonCv = null, birds = [];
-  let flowers = load('nightgarden.flowers', []);
-  const HUES = [190, 205, 265, 285, 320, 340, 45, 160];
-
-  function groundY(x) {
-    return H * 0.80 + Math.sin(x * 0.0042) * 16 + Math.sin(x * 0.011 + 1.3) * 7;
-  }
-  function backHillY(x) {
-    return H * 0.70 + Math.sin(x * 0.0023 + 2) * 30 + Math.sin(x * 0.007) * 10;
-  }
-
+  const c = document.getElementById('sky');
+  const x = c.getContext('2d');
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let W, H, stars = [];
   function resize() {
-    DPR = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth; H = window.innerHeight;
-    cv.width = W * DPR; cv.height = H * DPR;
-    moonCv = null;
-    cv.style.width = W + 'px'; cv.style.height = H + 'px';
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    stars = Array.from({ length: Math.floor(W * H / 2600) }, () => ({
-      x: Math.random() * W, y: Math.random() * H * 0.75,
-      r: Math.random() < 0.08 ? rand(1.1, 1.7) : rand(0.3, 0.9),
-      tw: rand(0.0005, 0.002), ph: rand(0, 6.28)
+    const d = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    c.width = W * d; c.height = H * d; x.setTransform(d, 0, 0, d, 0, 0);
+    const n = Math.round(W * H / 2600);
+    stars = Array.from({ length: n }, () => ({
+      x: Math.random() * W, y: Math.random() * H,
+      r: Math.random() < .08 ? 1.3 + Math.random() : .4 + Math.random() * .7,
+      p: Math.random() * Math.PI * 2, s: .4 + Math.random() * 1.4,
     }));
-    if (!fireflies.length) {
-      fireflies = Array.from({ length: 26 }, makeFirefly);
-    }
+    if (still) draw(0);
   }
-
-  function makeFirefly() {
-    return {
-      x: Math.random() * W, y: rand(H * 0.45, H * 0.85),
-      vx: rand(-.2, .2), vy: rand(-.15, .15),
-      ph: rand(0, 6.28), sp: rand(0.0015, 0.004), hue: rand(55, 85)
-    };
-  }
-
-  // ---------- flowers ----------
-  function plant(px, t) {
-    const f = {
-      fx: px / W,                       // stored as fraction so resizing works
-      h: rand(H * 0.12, H * 0.30),
-      hue: HUES[Math.floor(Math.random() * HUES.length)] + rand(-10, 10),
-      petals: 5 + Math.floor(Math.random() * 4),
-      petalLen: rand(11, 19),
-      lean: rand(-0.25, 0.25),
-      seed: rand(0, 1000),
-      born: t,
-      kind: Math.random() < 0.3 ? 'bell' : 'star',
-      released: false
-    };
-    flowers.push(f);
-    if (flowers.length > 120) flowers.shift();
-    store('nightgarden.flowers', flowers.map(({ bend, bv, ...o }) => ({ ...o, born: -1e9, released: true })));
-    chime(f.hue);
-  }
-
-  // Point on the stem's quadratic curve at s ∈ [0,1]
-  function stemPoint(f, s, t, ang) {
-    const x0 = f.fx * W, y0 = groundY(x0);
-    const tipX = x0 + Math.sin(ang) * f.h;
-    const tipY = y0 - Math.cos(ang) * f.h;
-    const cx = x0 + Math.sin(ang * 0.3) * f.h * 0.55;
-    const cy = y0 - Math.cos(ang * 0.3) * f.h * 0.55;
-    const u = 1 - s;
-    return [u*u*x0 + 2*u*s*cx + s*s*tipX, u*u*y0 + 2*u*s*cy + s*s*tipY];
-  }
-
-  function drawFlower(f, t) {
-    const age = t - f.born;
-    const g = clamp(age / 3200, 0, 1);
-    const grow = easeOut(clamp(g / 0.75, 0, 1));
-    const bloom = easeOut(clamp((g - 0.6) / 0.4, 0, 1));
-    // --- bending physics: flowers lean away from the cursor and get swept by its motion ---
-    if (f.bend === undefined) { f.bend = 0; f.bv = 0; }
-    let target = 0;
-    if (mouse.active) {
-      const [mx, my] = stemPoint(f, 0.7, t, f.lean + f.bend);
-      const dx = mx - mouse.x, dy = my - mouse.y, d = Math.hypot(dx, dy), R = 170;
-      if (d < R) {
-        const k = 1 - d / R;
-        target = Math.sign(dx || 1) * k * k * 1.0 + mouse.vx * 0.022 * k;
-      }
-    }
-    target = clamp(target + wind * 0.09, -1.25, 1.25);
-    f.bv += (target - f.bend) * 0.07;
-    f.bv *= 0.88;
-    f.bend += f.bv;
-    const sway = f.lean + f.bend + Math.sin(t * 0.0007 + f.seed) * 0.05 + Math.sin(t * 0.0017 + f.seed * 2) * 0.02;
-
-    // stem
-    ctx.strokeStyle = `hsla(${150 + (f.hue % 40) - 20}, ${30 + D * 10}%, ${24 + D * 12}%, 1)`;
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    const steps = 24;
-    for (let i = 0; i <= steps * grow; i++) {
-      const [x, y] = stemPoint(f, i / steps, t, sway);
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-
-    // leaves
-    [[0.32, 1], [0.55, -1]].forEach(([s, side], i) => {
-      const lg = clamp((grow - s) / 0.2, 0, 1);
-      if (lg <= 0) return;
-      const [x, y] = stemPoint(f, s, t, sway);
-      const L = 13 * easeOut(lg) * (i ? 0.8 : 1);
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(side * (0.9 + Math.sin(t * 0.001 + f.seed + i) * 0.08) - Math.PI / 2 + sway * 0.6);
-      ctx.fillStyle = `hsla(${145 + (f.hue % 30) - 15}, ${35 + D * 10}%, ${22 + D * 14}%, 1)`;
-      ctx.beginPath();
-      ctx.moveTo(0, 0);
-      ctx.quadraticCurveTo(L * 0.5, -L * 0.45, L, 0);
-      ctx.quadraticCurveTo(L * 0.5, L * 0.45, 0, 0);
-      ctx.fill();
-      ctx.restore();
-    });
-
-    if (bloom <= 0) return;
-    const [bx, by] = stemPoint(f, grow, t, sway);
-    const pulse = 0.85 + 0.15 * Math.sin(t * 0.0012 + f.seed);
-
-    // glow
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    const gr = f.petalLen * 3.2 * bloom;
-    const grad = ctx.createRadialGradient(bx, by, 0, bx, by, gr);
-    grad.addColorStop(0, `hsla(${f.hue}, 90%, 65%, ${0.35 * pulse * (1 - 0.7 * D)})`);
-    grad.addColorStop(1, `hsla(${f.hue}, 90%, 50%, 0)`);
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.arc(bx, by, gr, 0, 6.29); ctx.fill();
-    ctx.restore();
-
-    // petals
-    ctx.save();
-    ctx.translate(bx, by);
-    const spin = Math.sin(t * 0.0004 + f.seed) * 0.15;
-    if (f.kind === 'bell') {
-      ctx.rotate(Math.PI + sway * 0.8);
-      const L = f.petalLen * 1.1 * bloom;
-      for (let i = 0; i < 3; i++) {
-        ctx.save();
-        ctx.rotate((i - 1) * 0.42);
-        petal(L, L * 0.42, f.hue, pulse);
-        ctx.restore();
-      }
-    } else {
-      ctx.rotate(spin + f.bend * 0.6);
-      for (let i = 0; i < f.petals; i++) {
-        ctx.save();
-        ctx.rotate((i / f.petals) * Math.PI * 2);
-        petal(f.petalLen * bloom, f.petalLen * 0.38 * bloom, f.hue, pulse);
-        ctx.restore();
-      }
-      ctx.fillStyle = `hsla(${f.hue + 40}, 100%, 85%, ${pulse})`;
-      ctx.beginPath(); ctx.arc(0, 0, 2.6 * bloom, 0, 6.29); ctx.fill();
-    }
-    ctx.restore();
-
-    // release a few sparks the moment it opens
-    if (!f.released && bloom > 0.6) {
-      f.released = true;
-      for (let i = 0; i < 9; i++) {
-        sparks.push({ x: bx, y: by, vx: rand(-.6, .6), vy: rand(-1.2, -.2), life: 1, hue: f.hue });
-      }
-    }
-  }
-
-  function petal(len, wid, hue, pulse) {
-    const g = ctx.createLinearGradient(0, 0, len, 0);
-    g.addColorStop(0, `hsla(${hue}, 85%, 78%, ${0.95 * pulse})`);
-    g.addColorStop(1, `hsla(${hue + 15}, 80%, 55%, ${0.55 * pulse})`);
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.bezierCurveTo(len * 0.3, -wid, len * 0.85, -wid, len, 0);
-    ctx.bezierCurveTo(len * 0.85, wid, len * 0.3, wid, 0, 0);
-    ctx.fill();
-  }
-
-  // ---------- sky ----------
-  function drawSky(t) {
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, pal('skyTop'));
-    g.addColorStop(0.55, pal('skyMid'));
-    g.addColorStop(0.8, pal('skyHor'));
-    g.addColorStop(1, pal('skyBot'));
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-
-    // warm glow gathering on the horizon where the sun will rise
-    const sunX = W * 0.24;
-    if (D > 0.02) {
-      const hg = 0.55 * Math.sin(Math.PI * clamp(D / 0.9, 0, 1)) + 0.12 * D;
-      const hr = ctx.createRadialGradient(sunX, H * 0.72, 0, sunX, H * 0.72, Math.max(W, H) * 0.7);
-      hr.addColorStop(0, `rgba(255, 176, 120, ${hg})`);
-      hr.addColorStop(0.45, `rgba(255, 140, 130, ${hg * 0.35})`);
-      hr.addColorStop(1, 'rgba(255, 140, 130, 0)');
-      ctx.fillStyle = hr; ctx.fillRect(0, 0, W, H);
-    }
-
-    const starA = 1 - clamp(D / 0.5, 0, 1);
+  function draw(t) {
+    const g = x.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#04050d'); g.addColorStop(1, '#0d1030');
+    x.fillStyle = g; x.fillRect(0, 0, W, H);
     for (const s of stars) {
-      if (starA <= 0) break;
-      const a = (0.45 + 0.55 * Math.sin(t * s.tw + s.ph)) * starA;
-      ctx.fillStyle = `rgba(230, 235, 255, ${a * 0.9})`;
-      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.29); ctx.fill();
+      const a = .35 + .45 * (0.5 + 0.5 * Math.sin(s.p + t * .001 * s.s));
+      x.globalAlpha = a; x.fillStyle = '#dfe4ff';
+      x.beginPath(); x.arc(s.x, s.y, s.r, 0, 6.283); x.fill();
     }
-    drawHillConstellations(ctx, t, H * 0.875, starA);
-
-    // moon
-    const mx = W * 0.82, my = H * 0.17 + D * H * 0.08, mr = Math.min(W, H) * 0.045;
-    ctx.save(); ctx.globalAlpha = clamp(1 - D * 1.15, 0, 1);
-    const mg = ctx.createRadialGradient(mx, my, mr * 0.6, mx, my, mr * 5);
-    mg.addColorStop(0, 'rgba(210, 215, 255, .18)');
-    mg.addColorStop(1, 'rgba(210, 215, 255, 0)');
-    ctx.fillStyle = mg; ctx.beginPath(); ctx.arc(mx, my, mr * 5, 0, 6.29); ctx.fill();
-    if (!moonCv || moonCv._r !== mr) {
-      moonCv = document.createElement('canvas'); moonCv._r = mr;
-      moonCv.width = moonCv.height = Math.ceil(mr * 2 * DPR) + 4;
-      const m = moonCv.getContext('2d'); m.scale(DPR, DPR);
-      m.fillStyle = '#e9ebff'; m.beginPath(); m.arc(mr + 1, mr + 1, mr, 0, 6.29); m.fill();
-      m.globalCompositeOperation = 'destination-out';
-      m.beginPath(); m.arc(mr + 1 + mr * 0.42, mr + 1 - mr * 0.18, mr * 0.92, 0, 6.29); m.fill();
-    }
-    ctx.drawImage(moonCv, mx - mr - 1, my - mr - 1, moonCv.width / DPR, moonCv.height / DPR);
-    ctx.restore();
-
-    drawSun(t, sunX);
-
-    // shooting star
-    if (shooting) {
-      const k = (t - shooting.t0) / shooting.dur;
-      if (k >= 1) shooting = null;
-      else {
-        const x = shooting.x + shooting.dx * k, y = shooting.y + shooting.dy * k;
-        const tail = ctx.createLinearGradient(x, y, x - shooting.dx * 0.18, y - shooting.dy * 0.18);
-        tail.addColorStop(0, `rgba(255,255,255,${1 - k})`);
-        tail.addColorStop(1, 'rgba(255,255,255,0)');
-        ctx.strokeStyle = tail; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - shooting.dx * 0.18, y - shooting.dy * 0.18); ctx.stroke();
-      }
-    } else if (D < 0.3 && Math.random() < 0.0009) {
-      launchShootingStar(t);
-    }
+    x.globalAlpha = 1;
   }
-
-  function drawSun(t, sx) {
-    const u = sunUp();
-    if (u <= 0) return;
-    const sr = Math.min(W, H) * 0.055;
-    const sy = H * 0.80 - easeOut(u) * H * 0.58;      // starts hidden behind the back hills
-    const warm = [255, 110 + 120 * u, 60 + 140 * u];   // deep orange -> pale gold
-    const glow = u < 0.4 ? u / 0.4 : 1 - (u - 0.4) * 1.2;  // strongest at golden hour, gentle by full day
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    // soft rays
-    ctx.translate(sx, sy);
-    ctx.rotate(t * 0.00002);
-    for (let i = 0; i < 12; i++) {
-      ctx.rotate(Math.PI / 6);
-      const len = sr * (7 + 2 * Math.sin(t * 0.0004 + i * 1.7));
-      const rg = ctx.createLinearGradient(0, 0, len, 0);
-      rg.addColorStop(0, `rgba(${warm.join(',')}, ${0.09 * glow})`);
-      rg.addColorStop(1, `rgba(${warm.join(',')}, 0)`);
-      ctx.fillStyle = rg;
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(len, -sr * 0.5); ctx.lineTo(len, sr * 0.5); ctx.fill();
-    }
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    // halo
-    const halo = ctx.createRadialGradient(sx, sy, sr * 0.8, sx, sy, sr * 6);
-    halo.addColorStop(0, `rgba(${warm.join(',')}, ${0.42 * glow})`);
-    halo.addColorStop(1, `rgba(${warm.join(',')}, 0)`);
-    ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(sx, sy, sr * 6, 0, 6.29); ctx.fill();
-    ctx.restore();
-    // disc
-    const disc = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
-    disc.addColorStop(0, '#fffbe8');
-    disc.addColorStop(1, `rgb(${warm.map(Math.round).join(',')})`);
-    ctx.fillStyle = disc; ctx.beginPath(); ctx.arc(sx, sy, sr, 0, 6.29); ctx.fill();
-  }
-
-  function drawBirds(t) {
-    if (D > 0.55 && birds.length < 14 && Math.random() < 0.004 * D) {
-      const dir = Math.random() < 0.5 ? 1 : -1, y = rand(H * 0.1, H * 0.4), n = 3 + Math.floor(rand(0, 4));
-      const sp = rand(1.1, 1.8), size = rand(5, 8);
-      for (let i = 0; i < n; i++) {
-        const row = Math.ceil(i / 2), side = i % 2 ? 1 : -1;
-        birds.push({ x: dir > 0 ? -30 - row * 22 : W + 30 + row * 22, y: y + row * 12 * side * (i ? 1 : 0),
-                     vx: sp * dir, ph: rand(0, 6.28), s: size * rand(0.85, 1.1) });
-      }
-    }
-    ctx.save();
-    ctx.lineWidth = 1.6; ctx.lineCap = 'round';
-    ctx.strokeStyle = `rgba(45, 45, 70, ${0.75 * clamp((D - 0.3) / 0.4, 0, 1)})`;
-    for (let i = birds.length - 1; i >= 0; i--) {
-      const b = birds[i];
-      b.x += b.vx; b.y += Math.sin(t * 0.002 + b.ph) * 0.15;
-      if (b.x < -80 || b.x > W + 80) { birds.splice(i, 1); continue; }
-      const flap = Math.sin(t * 0.012 + b.ph) * 0.9;
-      ctx.beginPath();
-      ctx.moveTo(b.x - b.s, b.y - flap * b.s * 0.7);
-      ctx.quadraticCurveTo(b.x - b.s * 0.4, b.y - b.s * 0.25 - flap * b.s * 0.2, b.x, b.y);
-      ctx.quadraticCurveTo(b.x + b.s * 0.4, b.y - b.s * 0.25 - flap * b.s * 0.2, b.x + b.s, b.y - flap * b.s * 0.7);
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function launchShootingStar(t) {
-    shooting = { x: rand(W * 0.1, W * 0.6), y: rand(H * 0.05, H * 0.3), dx: rand(W * 0.25, W * 0.4), dy: rand(H * 0.1, H * 0.2), t0: t, dur: 1100 };
-  }
-
-  function drawHills() {
-    ctx.fillStyle = pal('back');
-    ctx.beginPath(); ctx.moveTo(0, H);
-    for (let x = 0; x <= W; x += 8) ctx.lineTo(x, backHillY(x));
-    ctx.lineTo(W, H); ctx.fill();
-
-    // first light catching the far ridge
-    const rim = clamp((D - 0.3) / 0.25, 0, 1) * (1.15 - D);
-    if (rim > 0) {
-      ctx.strokeStyle = `rgba(255, 196, 150, ${0.45 * rim})`; ctx.lineWidth = 2;
-      ctx.beginPath();
-      for (let x = 0; x <= W; x += 8) x ? ctx.lineTo(x, backHillY(x)) : ctx.moveTo(x, backHillY(x));
-      ctx.stroke();
-    }
-
-    // morning mist pooling in the valley, lifting as the sun climbs
-    const mist = Math.sin(Math.PI * clamp((D - 0.12) / 0.8, 0, 1)) * 0.42;
-    if (mist > 0.01) {
-      for (let i = 0; i < 3; i++) {
-        const y = H * (0.72 + i * 0.035) - D * H * 0.03, drift = Math.sin(lastT * 0.00012 + i * 2) * W * 0.05;
-        const mg = ctx.createLinearGradient(0, y - 40, 0, y + 40);
-        mg.addColorStop(0, 'rgba(255, 240, 235, 0)');
-        mg.addColorStop(0.5, `rgba(255, 238, 230, ${mist * (0.6 - i * 0.12)})`);
-        mg.addColorStop(1, 'rgba(255, 240, 235, 0)');
-        ctx.fillStyle = mg;
-        ctx.fillRect(drift - W * 0.1, y - 40, W * 1.2, 80);
-      }
-    }
-
-    ctx.fillStyle = pal('front');
-    ctx.beginPath(); ctx.moveTo(0, H);
-    for (let x = 0; x <= W; x += 6) ctx.lineTo(x, groundY(x));
-    ctx.lineTo(W, H); ctx.fill();
-
-    // grass tufts along the ridge
-    ctx.strokeStyle = pal('grass'); ctx.lineWidth = 1.2;
-    for (let x = 3; x < W; x += 9) {
-      const y = groundY(x), h = 5 + ((x * 7919) % 9);
-      let s = Math.sin(lastT * 0.001 + x * 0.05) * 1.5 + wind * 3;
-      if (mouse.active) {
-        const dx = x - mouse.x, d = Math.hypot(dx, y - mouse.y);
-        if (d < 90) s += Math.sign(dx || 1) * (1 - d / 90) * 9;
-      }
-      ctx.beginPath(); ctx.moveTo(x, y + 2); ctx.quadraticCurveTo(x, y - h * 0.5, x + s, y - h); ctx.stroke();
-    }
-  }
-
-  // ---------- particles ----------
-  function drawFireflies(t) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    for (const f of fireflies) {
-      f.vx += rand(-.03, .03) + (mouse.x - f.x) * 0.000004 * (mouse.active ? 1 : 0);
-      f.vy += rand(-.03, .03);
-      f.vx = clamp(f.vx, -.6, .6); f.vy = clamp(f.vy, -.4, .4);
-      f.x += f.vx + wind * 0.3; f.y += f.vy;
-      if (f.x < -20) f.x = W + 20; if (f.x > W + 20) f.x = -20;
-      if (f.y < H * 0.35) f.vy += 0.02; if (f.y > groundY(f.x) - 6) f.vy -= 0.05;
-      if (D > 0.4) {                                   // daytime: soft pollen motes
-        ctx.fillStyle = `rgba(255, 244, 210, ${0.5 * clamp((D - 0.4) / 0.4, 0, 1) * (0.6 + 0.4 * Math.sin(t * 0.002 + f.ph))})`;
-        ctx.beginPath(); ctx.arc(f.x, f.y, 1.4, 0, 6.29); ctx.fill();
-      }
-      const a = Math.max(0, Math.sin(t * f.sp + f.ph)) * clamp(1 - D * 1.6, 0, 1);
-      if (a < 0.02) continue;
-      const r = 9 * a;
-      const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
-      g.addColorStop(0, `hsla(${f.hue}, 100%, 75%, ${0.9 * a})`);
-      g.addColorStop(1, `hsla(${f.hue}, 100%, 50%, 0)`);
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(f.x, f.y, r, 0, 6.29); ctx.fill();
-    }
-    for (let i = sparks.length - 1; i >= 0; i--) {
-      const s = sparks[i];
-      s.x += s.vx + wind * 0.4; s.y += s.vy; s.vy *= 0.985; s.life -= 0.008;
-      if (s.life <= 0) { sparks.splice(i, 1); continue; }
-      ctx.fillStyle = `hsla(${s.hue}, 100%, 80%, ${s.life})`;
-      ctx.beginPath(); ctx.arc(s.x, s.y, 1.6 * s.life + 0.4, 0, 6.29); ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  // ---------- breathing guide (4 in · 4 hold · 6 out) ----------
-  let breathing = false, breathStart = 0;
-  function drawBreath(t) {
-    if (!breathing) return;
-    const cyc = 14000, k = ((t - breathStart) % cyc);
-    let r01, label;
-    if (k < 4000) { r01 = easeInOut(k / 4000); label = 'breathe in'; }
-    else if (k < 8000) { r01 = 1; label = 'hold'; }
-    else { r01 = 1 - easeInOut((k - 8000) / 6000); label = 'breathe out'; }
-    if (breathEl.textContent !== label) breathEl.textContent = label;
-    const R = 30 + r01 * Math.min(W, H) * 0.13;
-    const cx = W / 2, cy = H * 0.42;
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    const g = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.4);
-    g.addColorStop(0, 'rgba(140, 160, 255, 0)');
-    g.addColorStop(0.7, 'rgba(140, 160, 255, .10)');
-    g.addColorStop(1, 'rgba(140, 160, 255, 0)');
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.4, 0, 6.29); ctx.fill();
-    ctx.strokeStyle = 'rgba(200, 210, 255, .35)'; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.arc(cx, cy, R, 0, 6.29); ctx.stroke();
-    ctx.restore();
-  }
-
-  // ---------- sound (all synthesized live, nothing to download) ----------
-  // Buses: master -> { music (track + chimes), nature (crickets, cicadas, owl, wind) }
-  let audio = null, soundOn = false, musicOn = true, natureOn = true;
-  const PENTA = [0, 2, 4, 7, 9, 12, 14, 16];
-
-  function initAudio() {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return null;
-    const ac = new AC();
-    const master = ac.createGain(); master.gain.value = 0; master.connect(ac.destination);
-    const music = ac.createGain(); music.gain.value = 1; music.connect(master);
-    const nature = ac.createGain(); nature.gain.value = 1; nature.connect(master);
-    const nightBus = ac.createGain(); nightBus.gain.value = 1; nightBus.connect(nature);   // crickets, cicadas, owl
-    const dayBus = ac.createGain(); dayBus.gain.value = 1; dayBus.connect(nature);       // birdsong
-    const pan = (node, p) => {
-      if (!ac.createStereoPanner) return node;
-      const sp = ac.createStereoPanner(); sp.pan.value = p; node.connect(sp); return sp;
-    };
-
-    // echo for chimes and the distant owl
-    const delay = ac.createDelay(); delay.delayTime.value = 0.38;
-    const fb = ac.createGain(); fb.gain.value = 0.42;
-    const wet = ac.createGain(); wet.gain.value = 0.5;
-    delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
-
-    // shared noise buffer (slightly pinkened white noise)
-    const nb = ac.createBuffer(1, ac.sampleRate * 3, ac.sampleRate);
-    const d = nb.getChannelData(0); let b = 0;
-    for (let i = 0; i < d.length; i++) { b = 0.97 * b + 0.03 * (Math.random() * 2 - 1); d[i] = (Math.random() * 2 - 1) * 0.6 + b * 4; }
-    const noise = () => { const n = ac.createBufferSource(); n.buffer = nb; n.loop = true; n.start(); return n; };
-
-    // wind: low rumble that swells when you move the mouse
-    const windLp = ac.createBiquadFilter(); windLp.type = 'lowpass'; windLp.frequency.value = 300; windLp.Q.value = 0.7;
-    const windGain = ac.createGain(); windGain.gain.value = 0.015;
-    noise().connect(windLp); windLp.connect(windGain); windGain.connect(nature);
-
-    // crickets: short pulse-trains of a high sine, each cricket with its own pitch, tempo and position
-    const crickets = Array.from({ length: 4 }, (_, i) => {
-      const o = ac.createOscillator(); o.type = 'sine';
-      o.frequency.value = rand(3900, 5200);
-      const g = ac.createGain(); g.gain.value = 0;
-      o.connect(g); pan(g, [-0.7, -0.2, 0.35, 0.8][i]).connect(nightBus); o.start();
-      return { g, next: ac.currentTime + rand(0.2, 2), period: rand(0.55, 1.1), pulses: 2 + Math.floor(rand(0, 3)), amp: rand(0.012, 0.03) };
-    });
-
-    // cicadas: band-passed noise, buzzed by a fast LFO, swelling in and out
-    const cicadas = [[-0.5, 4400, 92], [0.6, 5600, 127]].map(([p, fq, rate]) => {
-      const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = fq; bp.Q.value = 5;
-      const am = ac.createGain(); am.gain.value = 0.5;
-      const buzz = ac.createOscillator(); buzz.frequency.value = rate;
-      const depth = ac.createGain(); depth.gain.value = 0.5;
-      buzz.connect(depth); depth.connect(am.gain); buzz.start();
-      const swell = ac.createGain(); swell.gain.value = 0;
-      noise().connect(bp); bp.connect(am); am.connect(swell); pan(swell, p).connect(nightBus);
-      return { swell, bp, next: ac.currentTime + rand(4, 14) };
-    });
-
-    return { ac, master, music, nature, nightBus, dayBus, delay, windGain, windLp, crickets, cicadas, nextOwl: ac.currentTime + rand(25, 50) };
-  }
-
-  function scheduleNature() {
-    if (!audio || !soundOn) return;
-    const { ac, crickets, cicadas } = audio;
-    const now = ac.currentTime, ahead = now + 0.4;
-
-    for (const c of crickets) {
-      while (c.next < ahead) {
-        if (Math.random() < 0.05) { c.next += rand(2, 6); continue; } // takes a breather
-        for (let k = 0; k < c.pulses; k++) {
-          const t0 = c.next + k * 0.042;
-          c.g.gain.setValueAtTime(0, t0);
-          c.g.gain.linearRampToValueAtTime(c.amp, t0 + 0.005);
-          c.g.gain.linearRampToValueAtTime(0, t0 + 0.022);
-        }
-        c.next += c.period * rand(0.92, 1.08);
-      }
-    }
-
-    for (const cz of cicadas) {
-      if (cz.next < ahead) {
-        const up = rand(3, 6), hold = rand(3, 8), down = rand(3, 6), peak = rand(0.025, 0.05);
-        const g = cz.swell.gain, t0 = Math.max(cz.next, now);
-        g.setValueAtTime(0, t0);
-        g.linearRampToValueAtTime(peak, t0 + up);
-        g.setValueAtTime(peak, t0 + up + hold);
-        g.linearRampToValueAtTime(0, t0 + up + hold + down);
-        cz.bp.frequency.setValueAtTime(cz.bp.frequency.value, t0);
-        cz.bp.frequency.linearRampToValueAtTime(cz.bp.frequency.value * rand(0.95, 1.08), t0 + up + hold);
-        cz.next = t0 + up + hold + down + rand(10, 30);
-      }
-    }
-
-    if (audio.nextOwl < ahead) { if (D < 0.3) owl(audio.nextOwl); audio.nextOwl += rand(45, 100); }
-
-    // the dawn chorus: more birds the further the sun has risen
-    if (D > 0.3 && Math.random() < 0.07 * D) birdSong(now + rand(0.05, 0.35));
-  }
-
-  // a single bird phrase: a warble, a two-note whistle, or a quick trill
-  function birdSong(t0) {
-    const { ac, dayBus, delay } = audio;
-    const out = ac.createGain(); out.gain.value = rand(0.035, 0.07);
-    let dest = out;
-    if (ac.createStereoPanner) { const sp = ac.createStereoPanner(); sp.pan.value = rand(-0.9, 0.9); out.connect(sp); dest = sp; }
-    else dest = out;
-    dest.connect(dayBus);
-    const echo = ac.createGain(); echo.gain.value = 0.15; out.connect(echo); echo.connect(delay);
-    const notes = [];
-    const kind = Math.random();
-    if (kind < 0.45) {                                  // warble
-      let t = t0; const n = 4 + Math.floor(rand(0, 4));
-      for (let i = 0; i < n; i++) {
-        const f1 = rand(2000, 3600), d = rand(0.06, 0.14);
-        notes.push([t, d, f1, f1 * rand(0.75, 1.35)]); t += d + rand(0.03, 0.07);
-      }
-    } else if (kind < 0.75) {                           // "fee-bee" whistle
-      const f = rand(3200, 4000);
-      notes.push([t0, 0.34, f, f * 0.97], [t0 + 0.46, 0.3, f * 0.85, f * 0.83]);
-    } else {                                            // trill
-      const f = rand(4200, 5600), n = 8 + Math.floor(rand(0, 7));
-      for (let i = 0; i < n; i++) notes.push([t0 + i * 0.05, 0.035, f, f * 0.85]);
-    }
-    for (const [t, d, f1, f2] of notes) {
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.type = 'sine';
-      o.frequency.setValueAtTime(f1, t);
-      o.frequency.exponentialRampToValueAtTime(f2, t + d);
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(1, t + Math.min(0.012, d / 3));
-      g.gain.linearRampToValueAtTime(0, t + d);
-      o.connect(g); g.connect(out); o.start(t); o.stop(t + d + 0.02);
-    }
-  }
-
-  // "hoo ... hoo-hoo-hoo", far away in the trees
-  function owl(t0) {
-    const { ac, nightBus: nature, delay } = audio;
-    const side = rand(-0.8, 0.8), base = rand(330, 390);
-    const out = ac.createGain(); out.gain.value = 0.05;
-    const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
-    lp.connect(out); out.connect(nature); out.connect(delay);
-    if (ac.createStereoPanner) { const sp = ac.createStereoPanner(); sp.pan.value = side; out.disconnect(nature); out.connect(sp); sp.connect(nature); }
-    [[0, 0.5], [0.95, 0.22], [1.25, 0.22], [1.55, 0.45]].forEach(([at, len]) => {
-      const o = ac.createOscillator(), g = ac.createGain(), t = t0 + at;
-      o.type = 'sine';
-      o.frequency.setValueAtTime(base * 1.04, t);
-      o.frequency.exponentialRampToValueAtTime(base * 0.94, t + len);
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(1, t + 0.06);
-      g.gain.setValueAtTime(1, t + len - 0.08);
-      g.gain.linearRampToValueAtTime(0, t + len);
-      o.connect(g); g.connect(lp); o.start(t); o.stop(t + len + 0.05);
-    });
-  }
-
-  setInterval(scheduleNature, 120);
-
-  // called every frame: wind sound follows the on-screen wind
-  function updateAmbience() {
-    if (!audio || !soundOn) return;
-    const w = Math.min(Math.abs(wind), 3) / 3, now = audio.ac.currentTime;
-    audio.windGain.gain.setTargetAtTime(0.015 + w * 0.22, now, 0.15);
-    audio.windLp.frequency.setTargetAtTime(280 + w * 900, now, 0.2);
-    audio.nightBus.gain.setTargetAtTime(1 - D, now, 0.5);    // crickets & co. go quiet as the sun comes up
-  }
-
-  function chime(hue) {
-    if (!soundOn || !audio || !musicOn) return;
-    const { ac, music, delay } = audio;
-    const n = PENTA[Math.floor(((hue % 360) / 360) * PENTA.length) % PENTA.length];
-    const f = 440 * Math.pow(2, (n + 3) / 12);
-    const o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'triangle'; o.frequency.value = f;
-    const now = ac.currentTime;
-    g.gain.setValueAtTime(0, now);
-    g.gain.linearRampToValueAtTime(0.12, now + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 2.2);
-    o.connect(g); g.connect(music); g.connect(delay);
-    o.start(now); o.stop(now + 2.3);
-  }
-
-  function ensureAudio() {
-    if (!audio) audio = initAudio();
-    if (!audio) { toast('No audio support in this browser'); return false; }
-    audio.ac.resume();
-    return true;
-  }
-  // ---- the backing track (music/night_garden.mp3), faded in and out by hand ----
-  const track = document.getElementById('track');
-  const TRACK_VOL = 0.75;
-  track.volume = 0;
-  let fadeRaf = 0;
-  function fadeTrack(on) {
-    cancelAnimationFrame(fadeRaf);
-    if (on) {
-      const p = track.play();
-      if (p && p.catch) p.catch(() => toast('Couldn\u2019t find music/night_garden.mp3', 3000));
-    }
-    const from = track.volume, to = on ? TRACK_VOL : 0, start = performance.now(), dur = on ? 2500 : 1500;
-    const step = now => {
-      const k = Math.max(0, Math.min(1, (now - start) / dur));
-      track.volume = from + (to - from) * k;
-      if (k < 1) fadeRaf = requestAnimationFrame(step);
-      else if (!on) track.pause();
-    };
-    fadeRaf = requestAnimationFrame(step);
-  }
-
-  function toggleSound() {
-    if (!ensureAudio()) return;
-    soundOn = !soundOn;
-    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, audio.ac.currentTime, 0.6);
-    fadeTrack(soundOn && musicOn);
-    toast(soundOn ? 'sound on' : 'sound off');
-  }
-  function toggleBus(which) {
-    if (!ensureAudio()) return;
-    if (!soundOn) {                       // first press while silent: just make sure that layer is on
-      if (which === 'music') musicOn = true; else natureOn = true;
-      audio[which].gain.value = 1;
-      return toggleSound();
-    }
-    if (which === 'music') musicOn = !musicOn; else natureOn = !natureOn;
-    const on = which === 'music' ? musicOn : natureOn;
-    audio[which].gain.setTargetAtTime(on ? 1 : 0, audio.ac.currentTime, 0.5);
-    if (which === 'music') fadeTrack(on);
-    toast(`${which === 'music' ? 'music' : 'nature sounds'} ${on ? 'on' : 'off'}`);
-  }
-
-  // ---------- wishes ----------
-  const WISHES = [
-    'This hour is the quietest one. It passes.',
-    'You don’t have to fix everything before sunrise.',
-    'Rough nights are real. So are the mornings after them.',
-    'Something small and good is allowed to happen today.',
-    'Drink some water. Seriously, it helps a little.',
-    'You planted something here. That counts.',
-    'Feelings are weather, not climate.',
-    'Be as kind to yourself as you would be to a friend at 5 a.m.',
-    'Nothing here needs anything from you.',
-    'The fireflies don’t know what time it is either.'
-  ];
-  const MORNING = [
-    'Good morning. You made it here.',
-    'The night was real. So is this.',
-    'You don\u2019t have to feel better on schedule.',
-    'Nothing has to be solved yet. Breakfast first.',
-    'Some days start gently. Let this be one.',
-    'Look, the flowers are still here.',
-    'Open a window if you can. Real birds are better than these.',
-    'Whatever today asks of you, you only have to do the next small thing.'
-  ];
-  let wishIdx = Math.floor(Math.random() * WISHES.length), morningIdx = Math.floor(Math.random() * MORNING.length);
-  function wish(t) {
-    if (D < 0.5) {
-      launchShootingStar(t);
-      wishIdx = (wishIdx + 1) % WISHES.length;
-      toast(WISHES[wishIdx], 6000);
-    } else {
-      if (audio && soundOn) birdSong(audio.ac.currentTime + 0.05);
-      morningIdx = (morningIdx + 1) % MORNING.length;
-      toast(MORNING[morningIdx], 6000);
-    }
-  }
-
-  // ---------- ui ----------
-  let toastTimer = 0;
-  function toast(msg, ms = 1600) {
-    toastEl.textContent = msg; toastEl.style.opacity = 1;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.style.opacity = 0, ms);
-  }
-
-  const mouse = { x: -999, y: -999, px: 0, vx: 0, active: false };
-  let wind = 0, lastT = 0;
-  window.addEventListener('pointermove', e => {
-    const dx = mouse.active ? e.clientX - mouse.px : 0;
-    mouse.active = true;
-    mouse.vx = mouse.vx * 0.5 + dx * 0.5;
-    wind = clamp(wind + clamp(dx * 0.006, -0.5, 0.5), -3, 3);
-    mouse.px = mouse.x = e.clientX; mouse.y = e.clientY;
-  });
-  document.addEventListener('pointerleave', () => { mouse.active = false; });
-  window.addEventListener('blur', () => { mouse.active = false; });
-  cv.addEventListener('pointerdown', e => {
-    plant(e.clientX, lastT);
-    if (hud.style.opacity !== '0') setTimeout(() => hud.style.opacity = 0.35, 400);
-  });
-  window.addEventListener('keydown', e => {
-    const k = e.key.toLowerCase();
-    if (k === 's') toggleSound();
-    else if (k === 'm') toggleBus('music');
-    else if (k === 'n') toggleBus('nature');
-    else if (k === 'b') {
-      breathing = !breathing; breathStart = lastT;
-      breathEl.style.opacity = breathing ? 1 : 0;
-    }
-    else if (k === 'c') { flowers = []; store('nightgarden.flowers', []); toast('garden cleared'); }
-    else if (k === 'h') hud.style.opacity = hud.style.opacity === '0' ? 1 : 0;
-    else if (k === 'w') wish(lastT);
-    else if (k === 'd') {
-      dawnTarget = dawnTarget ? 0 : 1;
-      toast(dawnTarget ? 'the sky is beginning to lighten\u2026' : 'night falls again\u2026', 3000);
-    }
-  });
-  window.addEventListener('resize', resize);
-
-  // ---------- loop ----------
-  function frame(t) {
-    const dt = prevT ? Math.min(100, t - prevT) : 16; prevT = t;
-    if (dawn !== dawnTarget) {
-      dawn = clamp(dawn + Math.sign(dawnTarget - dawn) * dt / DAWN_MS, 0, 1);
-      if (dawn === 1 && !greeted) { greeted = true; toast('Good morning.', 5000); }
-      if (dawn === 0) greeted = false;
-    }
-    D = easeInOut(dawn);
-    document.body.classList.toggle('day', D > 0.55);
-    lastT = t;
-    wind *= 0.965;
-    mouse.vx *= 0.85;
-    updateAmbience();
-    drawSky(t);
-    drawBreath(t);
-    drawHills();
-    for (const f of flowers) drawFlower(f, t);
-    drawFireflies(t);
-    drawBirds(t);
-    requestAnimationFrame(frame);
-  }
-
+  function loop(t) { draw(t); requestAnimationFrame(loop); }
+  addEventListener('resize', resize);
   resize();
-  // A first, small welcome: three flowers if the garden is empty
-  if (!flowers.length) {
-    setTimeout(() => { [0.22, 0.5, 0.76].forEach((p, i) => setTimeout(() => plant(W * p + rand(-30, 30), lastT), i * 700)); }, 600);
-  }
-  requestAnimationFrame(frame);
+  if (!still) requestAnimationFrame(loop);
 })();
 </script>
 </body>

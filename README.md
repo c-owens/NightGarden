@@ -1,15 +1,32 @@
 # Night Garden
 
-A small, quiet, interactive night scene that runs in your browser. Plant glowing flowers on a hillside under the stars, bring up the dawn when you're ready, brush through them with your cursor, watch the fireflies drift, and turn on a night soundscape of crickets, cicadas, a distant owl and the wind.
+A few small, quiet, interactive night scenes that run in your browser, all under the same sky. `index.html` is the front page: it links to each one.
 
-It's one HTML file plus a music track, with no dependencies, no install, no build step, and no internet needed. Keep the `music` folder next to the HTML files.
+| Scene | File | What it is |
+|---|---|---|
+| The Garden | `garden.html` | Plant glowing flowers on a hillside, brush through them, bring up the dawn |
+| The Pond | `pond.html` | A moonlit pond: float lanterns, hang stars, watch the koi |
+| The Hilltop | `hill.html` | Lie under the Milky Way and draw your own named constellations |
+| The High Pond | `high-pond.html` | A pond up on the hill: lanterns and koi below, your constellations above |
+| Moon Pond | `moon-pond.html` | The first pond: water lilies, reeds and koi under a low moon |
 
-## How to run
+Each scene is one HTML file, with no dependencies, no install, no build step, and no internet needed. Keep the `music` folder next to the HTML files.
 
-- Double-click **`Open Night Garden.bat`**, or
-- Double-click **`index.html`** (or drag it into any browser) to open the index of scenes, then pick one. The garden itself is `garden.html`.
+## How to launch
+
+Start at the index page and pick a scene from there. Any of these works:
+
+1. **Double-click `Open Night Garden.bat`** (Windows). It opens `index.html` in your default browser.
+2. **Open `index.html` directly**: double-click it, or drag it into any browser window.
+3. **Run the local server** (needs Node.js): from this folder run `node serve.js`, then go to <http://localhost:8777/>. Set `PORT` to use a different port. Claude Code's preview uses the same server (the `nightgarden` entry in `.claude/launch.json`).
+
+Opening the files directly is the simplest route, and it's the one where constellations drawn on the hilltop also show up in the garden and pond skies (Chrome and Edge share browser storage between local files). Served over `localhost`, the scenes share storage too, but it's separate from the storage the file version uses.
 
 Press **F11** for fullscreen. It looks best that way.
+
+## The garden
+
+Plant glowing flowers on a hillside under the stars, bring up the dawn when you're ready, brush through them with your cursor, watch the fireflies drift, and turn on a night soundscape of crickets, cicadas, a distant owl and the wind.
 
 ## Controls
 

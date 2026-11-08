@@ -22,15 +22,28 @@
     color: rgba(225,230,255,.8); text-shadow: 0 0 10px rgba(120,140,255,.5);
     max-width: calc(100vw - 32px); opacity: 0; transition: opacity .9s ease; pointer-events: none;
   }
+  #breath {
+    position: fixed; left: 50%; top: 40%; transform: translate(-50%, -50%);
+    font: 300 18px Georgia, serif; letter-spacing: .2em; color: rgba(230,235,255,.85);
+    pointer-events: none; opacity: 0; transition: opacity 1s ease;
+  }
+  #back {
+    position: fixed; left: 18px; bottom: 16px; font: 12px Georgia, serif; letter-spacing: .08em;
+    color: rgba(200,210,255,.35); text-decoration: none; transition: color .6s ease;
+  }
+  #back:hover { color: rgba(220,228,255,.85); }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud">
   Click the water to float a lily. Hover near one to wake it.
-  <small>click the sky to wish &nbsp;·&nbsp; <b>S</b> sound &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>G</b> to the garden &nbsp;·&nbsp; <b>H</b> hide this</small>
+  <small>click the sky to wish<br>
+  <b>S</b> <span id="snd">sound off</span> &nbsp;·&nbsp; <b>M</b> music &nbsp;·&nbsp; <b>N</b> nature &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>B</b> breathe &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>H</b> hide this</small>
 </div>
+<div id="breath"></div>
 <div id="toast"></div>
+<a id="back" href="garden.html">&larr; back to the garden</a>
 
 <script>
 (() => {
@@ -39,6 +52,8 @@
   const sky = document.createElement('canvas');      // the sky is drawn once per frame here, then mirrored into the pond
   const sx = sky.getContext('2d');
   const hud = document.getElementById('hud');
+  const sndLabel = document.getElementById('snd');
+  const breathEl = document.getElementById('breath');
   const toastEl = document.getElementById('toast');
   let W = 0, H = 0, DPR = 1, HZ = 0;                    // HZ = the far shore, where sky meets water
 
@@ -46,6 +61,7 @@
   const rand = (a, b) => a + Math.random() * (b - a);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const easeOut = t => 1 - Math.pow(1 - t, 3);
+  const easeInOut = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
   const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
   function store(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
   function load(k, d) { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch (e) { return d; } }
@@ -443,7 +459,9 @@
   }
 
   // ---------- sound (synthesized live) ----------
-  let audio = null, soundOn = false;
+  // Sound starts on. S, M and N choices are remembered, and shared by every scene.
+  const soundPrefs = load('nightgarden.audio', {});
+  let audio = null, soundOn = soundPrefs.sound !== false, musicOn = soundPrefs.music !== false, natureOn = soundPrefs.nature !== false;
   const PENTA = [0, 3, 5, 7, 10, 12, 15, 17];          // A minor pentatonic, same key as the garden's music
 
   function initAudio() {
@@ -451,10 +469,12 @@
     if (!AC) return null;
     const ac = new AC();
     const master = ac.createGain(); master.gain.value = 0; master.connect(ac.destination);
+    const music = ac.createGain(); music.connect(master);       // the drone, chimes and their echo
+    const nature = ac.createGain(); nature.connect(master);     // frogs
     const delay = ac.createDelay(); delay.delayTime.value = 0.42;
     const fb = ac.createGain(); fb.gain.value = 0.45;
     const wet = ac.createGain(); wet.gain.value = 0.5;
-    delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
+    delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(music);
 
     // a low, slow drone: the pond breathing
     const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 520;
@@ -465,8 +485,8 @@
     for (const f of [110, 110.4, 164.8, 220.6]) {
       const o = ac.createOscillator(); o.type = 'sine'; o.frequency.value = f; o.connect(lp); o.start();
     }
-    lp.connect(drone); drone.connect(master);
-    return { ac, master, delay };
+    lp.connect(drone); drone.connect(music);
+    return { ac, master, music, nature, delay };
   }
 
   function voice(dest, pan) {
@@ -477,14 +497,14 @@
 
   function chime(hue) {
     if (!soundOn || !audio) return;
-    const { ac, master, delay } = audio;
+    const { ac, music, delay } = audio;
     const n = PENTA[Math.floor(((hue % 360) / 360) * PENTA.length) % PENTA.length];
     const f = 440 * Math.pow(2, n / 12), now = ac.currentTime;
     const g = ac.createGain();
     g.gain.setValueAtTime(0, now);
     g.gain.linearRampToValueAtTime(0.09, now + 0.015);
     g.gain.exponentialRampToValueAtTime(0.0001, now + 3);
-    g.connect(voice(master, rand(-0.6, 0.6))); g.connect(delay);
+    g.connect(voice(music, rand(-0.6, 0.6))); g.connect(delay);
     for (const [mul, type] of [[1, 'sine'], [2.01, 'triangle']]) {
       const o = ac.createOscillator(); o.type = type; o.frequency.value = f * mul;
       const og = ac.createGain(); og.gain.value = mul === 1 ? 1 : 0.25;
@@ -495,7 +515,7 @@
   // a drop into still water: a quick upward sweep
   function plip(x) {
     if (!soundOn || !audio) return;
-    const { ac, master, delay } = audio, now = ac.currentTime;
+    const { ac, music, delay } = audio, now = ac.currentTime;
     const o = ac.createOscillator(), g = ac.createGain();
     o.type = 'sine';
     o.frequency.setValueAtTime(rand(500, 700), now);
@@ -503,17 +523,17 @@
     g.gain.setValueAtTime(0, now);
     g.gain.linearRampToValueAtTime(0.14, now + 0.005);
     g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-    o.connect(g); g.connect(voice(master, clamp(x / W * 2 - 1, -0.9, 0.9))); g.connect(delay);
+    o.connect(g); g.connect(voice(music, clamp(x / W * 2 - 1, -0.9, 0.9))); g.connect(delay);
     o.start(now); o.stop(now + 0.2);
   }
 
   // a frog somewhere along the bank
   function frog() {
-    const { ac, master } = audio, t0 = ac.currentTime + 0.05;
+    const { ac, nature } = audio, t0 = ac.currentTime + 0.05;
     const base = rand(85, 140), n = 2 + Math.floor(rand(0, 5));
     const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 600; lp.Q.value = 6;
     const out = ac.createGain(); out.gain.value = 0.05;
-    lp.connect(out); out.connect(voice(master, rand(-0.9, 0.9)));
+    lp.connect(out); out.connect(voice(nature, rand(-0.9, 0.9)));
     for (let i = 0; i < n; i++) {
       const t = t0 + i * rand(0.11, 0.16), o = ac.createOscillator(), g = ac.createGain();
       o.type = 'square'; o.frequency.setValueAtTime(base * 1.1, t); o.frequency.exponentialRampToValueAtTime(base, t + 0.07);
@@ -523,13 +543,73 @@
   }
   setInterval(() => { if (audio && soundOn && Math.random() < 0.05) frog(); }, 300);
 
-  function toggleSound() {
+  function ensureAudio() {
     if (!audio) audio = initAudio();
-    if (!audio) { toast('No audio support in this browser'); return; }
+    if (!audio) { toast('No audio support in this browser'); return false; }
     audio.ac.resume();
-    soundOn = !soundOn;
-    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, audio.ac.currentTime, 0.6);
+    return true;
+  }
+  // ---------- sound controls (the same in every scene) ----------
+  function applySound() {
+    if (!ensureAudio()) return;
+    const now = audio.ac.currentTime;
+    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, now, 0.6);
+    audio.music.gain.setTargetAtTime(musicOn ? 1 : 0, now, 0.5);
+    audio.nature.gain.setTargetAtTime(natureOn ? 1 : 0, now, 0.5);
+    sndLabel.textContent = soundOn ? 'sound off' : 'sound on';
+    store('nightgarden.audio', { sound: soundOn, music: musicOn, nature: natureOn });
+  }
+  function toggleSound() {
+    soundOn = !soundOn; applySound();
     toast(soundOn ? 'sound on' : 'sound off');
+  }
+  function toggleBus(which) {
+    if (!soundOn) { soundOn = true; if (which === 'music') musicOn = true; else natureOn = true; }   // while silent, M or N brings that layer back
+    else if (which === 'music') musicOn = !musicOn;
+    else natureOn = !natureOn;
+    applySound();
+    const on = which === 'music' ? musicOn : natureOn;
+    toast(`${which === 'music' ? 'music' : 'nature sounds'} ${on ? 'on' : 'off'}`);
+  }
+  // Start the sound straight away. Browsers can hold audio back until the page is clicked or a key
+  // is pressed; when they do, it starts on that first click or key instead.
+  function unlockSound(e) {
+    if (e.type === 'keydown' && /^[smn]$/i.test(e.key)) return;          // those keys set the sound themselves
+    if (soundOn) applySound();
+    if (audio) audio.ac.resume().then(() => {
+      if (audio.ac.state !== 'running') return;
+      if (soundOn && toastEl.textContent.startsWith('sound starts')) toast('sound on · press S to turn it off', 3000);
+      removeEventListener('pointerdown', unlockSound, true);
+      removeEventListener('keydown', unlockSound, true);
+    });
+  }
+  addEventListener('pointerdown', unlockSound, true);
+  addEventListener('keydown', unlockSound, true);
+  if (soundOn) {
+    applySound();
+    setTimeout(() => toast(audio && audio.ac.state === 'running'
+      ? 'sound on \u00b7 press S to turn it off'
+      : 'sound starts with your first click \u00b7 press S to keep it off', 4500), 700);
+  } else sndLabel.textContent = 'sound on';
+
+  // ---------- breathing guide (4 in · 4 hold · 6 out), a ring on the water ----------
+  let breathing = false, breathStart = 0;
+  function drawBreath(t) {
+    if (!breathing) return;
+    const k = (t - breathStart) % 14000;
+    let r01, label;
+    if (k < 4000) { r01 = easeInOut(k / 4000); label = 'breathe in'; }
+    else if (k < 8000) { r01 = 1; label = 'hold'; }
+    else { r01 = 1 - easeInOut((k - 8000) / 6000); label = 'breathe out'; }
+    if (breathEl.textContent !== label) breathEl.textContent = label;
+    const cx = W / 2, cy = HZ + (H - HZ) * 0.42, R = 30 + r01 * Math.min(W * 0.32, 420);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) {
+      ctx.strokeStyle = `rgba(190, 200, 255, ${0.28 - i * 0.08})`; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.ellipse(cx, cy, R * (1 - i * 0.12), R * (1 - i * 0.12) * 0.28, 0, 0, 6.29); ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // ---------- wishes ----------
@@ -561,7 +641,7 @@
 
   // ---------- input ----------
   const mouse = { x: -999, y: -999, active: false };
-  let lastT = 0, lastTrail = 0;
+  let lastT = 0, lastTrail = 0, clearArmed = 0;
   window.addEventListener('pointermove', e => {
     const sp = mouse.active ? Math.hypot(e.clientX - mouse.x, e.clientY - mouse.y) : 0;
     mouse.active = true; mouse.x = e.clientX; mouse.y = e.clientY;
@@ -584,10 +664,16 @@
   window.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
     if (k === 's') toggleSound();
+    else if (k === 'm') toggleBus('music');
+    else if (k === 'n') toggleBus('nature');
     else if (k === 'w') wish(lastT);
-    else if (k === 'c') { lilies = []; saveLilies(); toast('the pond is still again'); }
+    else if (k === 'b') { breathing = !breathing; breathStart = lastT; breathEl.style.opacity = breathing ? 1 : 0; }
+    else if (k === 'c') {
+      if (!lilies.length) return toast('nothing to clear yet');
+      if (lastT < clearArmed) { lilies = []; saveLilies(); toast('the pond is still again'); clearArmed = 0; }
+      else { clearArmed = lastT + 3000; toast('press C again to clear the lilies', 3000); }
+    }
     else if (k === 'h') hud.style.opacity = hud.style.opacity === '0' ? 1 : 0;
-    else if (k === 'g') location.href = 'garden.html';
   });
   window.addEventListener('resize', resize);
 
@@ -603,6 +689,7 @@
     drawGlitter(t);
     drawRipples(t);
     drawLilies(t);
+    drawBreath(t);
     drawFireflies(t);
     drawReeds(t);
     requestAnimationFrame(frame);

@@ -50,7 +50,7 @@
 <div id="hud">
   Click a star, then another, to draw a constellation.
   <small>click the last star again to finish &nbsp;·&nbsp; <b>R</b> rename &nbsp;·&nbsp; <b>Backspace</b> undo &nbsp;·&nbsp; <b>Esc</b> cancel<br>
-  <b>S</b> sound &nbsp;·&nbsp; <b>M</b> music &nbsp;·&nbsp; <b>N</b> nature &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>B</b> breathe &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>H</b> hide this</small>
+  <b>S</b> <span id="snd">sound off</span> &nbsp;·&nbsp; <b>M</b> music &nbsp;·&nbsp; <b>N</b> nature &nbsp;·&nbsp; <b>W</b> wish &nbsp;·&nbsp; <b>B</b> breathe &nbsp;·&nbsp; <b>C</b> clear &nbsp;·&nbsp; <b>H</b> hide this</small>
 </div>
 <div id="breath"></div>
 <div id="toast"></div>
@@ -64,6 +64,7 @@
   const cv = document.getElementById('c');
   const ctx = cv.getContext('2d');
   const hud = document.getElementById('hud');
+  const sndLabel = document.getElementById('snd');
   const breathEl = document.getElementById('breath');
   const toastEl = document.getElementById('toast');
   const namer = document.getElementById('namer');
@@ -561,7 +562,9 @@
 
   // ---------- sound (all synthesized live) ----------
   // master -> { music (slow pad + star bells), nature (wind, a few far-off crickets) }
-  let audio = null, soundOn = false, musicOn = true, natureOn = true;
+  // Sound starts on. S, M and N choices are remembered, and shared by every scene.
+  const soundPrefs = load('nightgarden.audio', {});
+  let audio = null, soundOn = soundPrefs.sound !== false, musicOn = soundPrefs.music !== false, natureOn = soundPrefs.nature !== false;
   const SCALE = [0, 2, 4, 7, 9];                       // F major pentatonic, for the stars
   const F3 = 174.61;
   const CHORDS = [                                    // semitones above F3
@@ -679,24 +682,48 @@
     audio.ac.resume();
     return true;
   }
-  function toggleSound() {
+  // ---------- sound controls (the same in every scene) ----------
+  function applySound() {
     if (!ensureAudio()) return;
-    soundOn = !soundOn;
-    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, audio.ac.currentTime, 0.6);
+    const now = audio.ac.currentTime;
+    audio.master.gain.setTargetAtTime(soundOn ? 0.8 : 0, now, 0.6);
+    audio.music.gain.setTargetAtTime(musicOn ? 1 : 0, now, 0.5);
+    audio.nature.gain.setTargetAtTime(natureOn ? 1 : 0, now, 0.5);
+    sndLabel.textContent = soundOn ? 'sound off' : 'sound on';
+    store('nightgarden.audio', { sound: soundOn, music: musicOn, nature: natureOn });
+  }
+  function toggleSound() {
+    soundOn = !soundOn; applySound();
     toast(soundOn ? 'sound on' : 'sound off');
   }
   function toggleBus(which) {
-    if (!ensureAudio()) return;
-    if (!soundOn) {
-      if (which === 'music') musicOn = true; else natureOn = true;
-      audio[which].gain.value = 1;
-      return toggleSound();
-    }
-    if (which === 'music') musicOn = !musicOn; else natureOn = !natureOn;
+    if (!soundOn) { soundOn = true; if (which === 'music') musicOn = true; else natureOn = true; }   // while silent, M or N brings that layer back
+    else if (which === 'music') musicOn = !musicOn;
+    else natureOn = !natureOn;
+    applySound();
     const on = which === 'music' ? musicOn : natureOn;
-    audio[which].gain.setTargetAtTime(on ? 1 : 0, audio.ac.currentTime, 0.5);
     toast(`${which === 'music' ? 'music' : 'nature sounds'} ${on ? 'on' : 'off'}`);
   }
+  // Start the sound straight away. Browsers can hold audio back until the page is clicked or a key
+  // is pressed; when they do, it starts on that first click or key instead.
+  function unlockSound(e) {
+    if (e.type === 'keydown' && /^[smn]$/i.test(e.key)) return;          // those keys set the sound themselves
+    if (soundOn) applySound();
+    if (audio) audio.ac.resume().then(() => {
+      if (audio.ac.state !== 'running') return;
+      if (soundOn && toastEl.textContent.startsWith('sound starts')) toast('sound on · press S to turn it off', 3000);
+      removeEventListener('pointerdown', unlockSound, true);
+      removeEventListener('keydown', unlockSound, true);
+    });
+  }
+  addEventListener('pointerdown', unlockSound, true);
+  addEventListener('keydown', unlockSound, true);
+  if (soundOn) {
+    applySound();
+    setTimeout(() => toast(audio && audio.ac.state === 'running'
+      ? 'sound on \u00b7 press S to turn it off'
+      : 'sound starts with your first click \u00b7 press S to keep it off', 4500), 700);
+  } else sndLabel.textContent = 'sound on';
 
   // ---------- wishes ----------
   const WISHES = [
@@ -771,7 +798,7 @@
     else if (k === 'r') { e.preventDefault(); startRename(hovered || (shownName && lastT < shownName.until && shownName.k) || lastMade); }
     else if (k === 'c') {
       if (cur) { cur = null; return; }
-      if (!consts.length) return;
+      if (!consts.length) return toast('nothing to clear yet');
       if (lastT < clearArmed) { consts = []; save(); clearArmed = 0; toast('the sky is just stars again'); }
       else { clearArmed = lastT + 3000; toast('press C again to let your constellations go', 3000); }
     }
